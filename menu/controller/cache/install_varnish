@@ -22,7 +22,7 @@ MAX_MEMORY="512"
 _confirm(){
     while true
     do
-        read -r -p "Ban muon cai dat Varnish Cache? (y/n) " prompt_varnish
+        read -r -p "Ban muon cai dat Varnish Cache voi cac gia tri mac dinh? (y/n) " prompt_varnish
         echo
         if [[ "${prompt_varnish}" =~ ^([yY])$ || "${prompt_varnish}" =~ ^([nN])$ ]]; then
             break
@@ -32,51 +32,25 @@ _confirm(){
     done
 }
 
-_confirm_advanced_settings(){
-    while true
-    do
-        read -r -p "Ban muon cau hinh nang cao cho viec cai dat Varnish? (y/n) " prompt_advanced
-        echo
-        if [[ "${prompt_advanced}" =~ ^([yY])$ || "${prompt_advanced}" =~ ^([nN])$ ]]; then
-            break
-        else
-            printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
-        fi
-    done
-}
-
-_configure_advanced_settings(){
-    printf "${GREEN}%s${NC}\n" "Nhap cac thong so cau hinh cho Varnish:"
+_set_default_settings(){
+    # Use default settings without prompting
+    VARNISH_VERSION="7.7.1"
+    VARNISH_INSTALL_DIR="/usr/local"
+    MAX_MEMORY="512"
     
-    # Ask for version
-    read -r -p "Phien ban Varnish (mac dinh: ${VARNISH_VERSION}): " custom_version
-    if [[ -n "${custom_version}" ]]; then
-        VARNISH_VERSION="${custom_version}"
-    fi
+    # No extra flags by default
+    EXTRA_FLAGS=""
     
-    # Ask for installation directory
-    read -r -p "Thu muc cai dat (prefix) (mac dinh: ${VARNISH_INSTALL_DIR}): " custom_install_dir
-    if [[ -n "${custom_install_dir}" ]]; then
-        VARNISH_INSTALL_DIR="${custom_install_dir}"
-    fi
+    # No custom build flags by default
+    CUSTOM_CFLAGS=""
+    CUSTOM_CPPFLAGS=""
+    CUSTOM_LDFLAGS=""
     
-    # Ask for memory allocation
-    read -r -p "Dung luong bo nho toi da cho Varnish (MB) (mac dinh: ${MAX_MEMORY}): " custom_memory
-    if [[ -n "${custom_memory}" ]]; then
-        MAX_MEMORY="${custom_memory}"
-    fi
-    
-    # Ask for additional configure flags
-    read -r -p "Tham so mo rong cho ./configure (vi du: --mandir=/usr/share/man): " EXTRA_FLAGS
-    
-    # Ask for CFLAGS
-    read -r -p "CFLAGS (vi du: -O2 -g): " CUSTOM_CFLAGS
-    
-    # Ask for CPPFLAGS
-    read -r -p "CPPFLAGS (vi du: -I/usr/local/include): " CUSTOM_CPPFLAGS
-    
-    # Ask for LDFLAGS
-    read -r -p "LDFLAGS (vi du: -L/usr/local/lib): " CUSTOM_LDFLAGS
+    # Log the settings that will be used
+    printf "${GREEN}%s${NC}\n" "Cai dat Varnish voi cac gia tri mac dinh:"
+    printf "${GREEN}%s${NC}\n" "- Phien ban: ${VARNISH_VERSION}"
+    printf "${GREEN}%s${NC}\n" "- Thu muc cai dat: ${VARNISH_INSTALL_DIR}"
+    printf "${GREEN}%s${NC}\n" "- Bo nho toi da: ${MAX_MEMORY}MB"
 }
 
 _install_dependencies(){
@@ -90,7 +64,8 @@ _install_dependencies(){
 }
 
 _install_varnish_from_source(){
-    printf "${GREEN}%s${NC}\n" "Dang cai dat Varnish Cache tu source..."
+    printf "${GREEN}%s${NC}\n" "Dang cai dat Varnish Cache tu source (phien ban ${VARNISH_VERSION})..."
+    printf "${GREEN}%s${NC}\n" "Qua trinh nay co the mat vai phut, vui long cho..."
     
     # Create temporary directory for building
     mkdir -p /tmp/varnish-build
@@ -359,11 +334,8 @@ else
     _confirm
     
     if [[ "${prompt_varnish}" =~ ^([yY])$ ]]; then
-        # Ask for advanced settings
-        _confirm_advanced_settings
-        if [[ "${prompt_advanced}" =~ ^([yY])$ ]]; then
-            _configure_advanced_settings
-        fi
+        # Set default settings without prompting
+        _set_default_settings
         
         # Install dependencies
         if ! _install_dependencies; then
@@ -382,12 +354,14 @@ else
             printf "${RED}%s${NC}\n" "Cau hinh Nginx that bai. Vui long kiem tra lai."
             exit 1
         fi
-        
-        clear
+          clear
         if service_running "varnish"; then
-            printf "${GREEN}%s${NC}\n" "Cai dat Varnish Cache thanh cong."
+            printf "${GREEN}%s${NC}\n" "Cai dat Varnish Cache thanh cong voi cac gia tri mac dinh:"
+            printf "${GREEN}%s${NC}\n" "- Phien ban: ${VARNISH_VERSION}"
+            printf "${GREEN}%s${NC}\n" "- Thu muc cai dat: ${VARNISH_INSTALL_DIR}"
+            printf "${GREEN}%s${NC}\n" "- Bo nho toi da: ${MAX_MEMORY}MB"
             printf "${GREEN}%s${NC}\n" "Nginx da duoc cau hinh de hoat dong voi Varnish Cache."
-            printf "${GREEN}%s${NC}\n" "Varnish da duoc cai dat tai: ${VARNISH_INSTALL_DIR}"
+            printf "${GREEN}%s${NC}\n" "De thay doi cau hinh, hay chinh sua file /etc/varnish/default.vcl"
         else
             systemctl status varnish
             printf "${RED}%s${NC}\n" "Cai dat Varnish Cache that bai hoac Varnish khong hoat dong."

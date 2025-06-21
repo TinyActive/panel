@@ -30,7 +30,9 @@ do
     then
         CHOICE=1
         continue
-    fi    case ${CHOICE} in
+    fi
+    
+    case ${CHOICE} in
         1) clear; cache_manage_memcached ;;
         2) clear; cache_manage_redis ;;
         3) clear; cache_manage_opcache ;;

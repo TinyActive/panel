@@ -18,6 +18,9 @@ source /var/hostvn/menu/helpers/function
 VARNISH_VERSION="7.7.1"
 VARNISH_INSTALL_DIR="/usr/local"
 MAX_MEMORY="512"
+VARNISH_PORT="6081"
+VARNISH_ADMIN_PORT="6082"
+BACKEND_PORT="8080"
 
 _confirm(){
     while true
@@ -37,6 +40,9 @@ _set_default_settings(){
     VARNISH_VERSION="7.7.1"
     VARNISH_INSTALL_DIR="/usr/local"
     MAX_MEMORY="512"
+    VARNISH_PORT="6081"
+    VARNISH_ADMIN_PORT="6082"
+    BACKEND_PORT="8080"
     
     # No extra flags by default
     EXTRA_FLAGS=""
@@ -51,6 +57,8 @@ _set_default_settings(){
     printf "${GREEN}%s${NC}\n" "- Phien ban: ${VARNISH_VERSION}"
     printf "${GREEN}%s${NC}\n" "- Thu muc cai dat: ${VARNISH_INSTALL_DIR}"
     printf "${GREEN}%s${NC}\n" "- Bo nho toi da: ${MAX_MEMORY}MB"
+    printf "${GREEN}%s${NC}\n" "- Port Varnish: ${VARNISH_PORT}"
+    printf "${GREEN}%s${NC}\n" "- Port backend: ${BACKEND_PORT}"
 }
 
 _install_dependencies(){
@@ -140,15 +148,14 @@ _install_varnish_from_source(){
     mkdir -p /etc/varnish
     mkdir -p /var/lib/varnish
     chown varnish:varnish /var/lib/varnish
-    
-    # Create basic configuration
+      # Create basic configuration
     cat > "/etc/varnish/default.vcl" << END
 vcl 4.1;
 
 # Default backend definition
 backend default {
     .host = "127.0.0.1";
-    .port = "8080";
+    .port = "${BACKEND_PORT}";
     .connect_timeout = 300s;
     .first_byte_timeout = 300s;
     .between_bytes_timeout = 300s;
@@ -267,9 +274,7 @@ sub vcl_deliver {
     
     return (deliver);
 }
-END
-
-    # Create systemd service file
+END    # Create systemd service file
     cat > "/lib/systemd/system/varnish.service" << END
 [Unit]
 Description=Varnish HTTP accelerator
@@ -280,7 +285,7 @@ After=network-online.target nss-lookup.target
 Type=forking
 LimitNOFILE=131072
 LimitMEMLOCK=82000
-ExecStart=${VARNISH_INSTALL_DIR}/sbin/varnishd -a :80 -f /etc/varnish/default.vcl -s malloc,${MAX_MEMORY}m -T localhost:6082 -p default_ttl=3600 -p default_grace=3600
+ExecStart=${VARNISH_INSTALL_DIR}/sbin/varnishd -a :${VARNISH_PORT} -f /etc/varnish/default.vcl -s malloc,${MAX_MEMORY}m -T localhost:${VARNISH_ADMIN_PORT} -p default_ttl=3600 -p default_grace=3600
 ExecReload=${VARNISH_INSTALL_DIR}/bin/varnishadm "vcl.load reload-\$(date +%%s) /etc/varnish/default.vcl" \
              && ${VARNISH_INSTALL_DIR}/bin/varnishadm "vcl.use reload-\$(date +%%s)"
 User=varnish
@@ -310,14 +315,156 @@ END
 _configure_nginx_for_varnish() {
     printf "${GREEN}%s${NC}\n" "Dang cau hinh Nginx de hoat dong voi Varnish..."
     
-    # Update Nginx vhosts to listen on 8080 instead of 80
-    _cd_dir "${VHOST_DIR}"
-    for domain_conf in *.conf; do
-        if [ -f "${domain_conf}" ]; then
-            # Change listen port from 80 to 8080
-            sed -i 's/listen 80;/listen 8080;/g' "${domain_conf}"
+    # Create a sample Nginx configuration for Varnish integration
+    cat > "/etc/nginx/conf.d/varnish_example.conf.disabled" << END
+# Example configuration for using Varnish with a domain
+# To use this, modify your domain configuration file
+# This is just a template and should be adapted for each domain
+
+# Original server block that will serve content to Varnish
+server {
+    listen ${BACKEND_PORT};
+    server_name example.com www.example.com;
+    
+    # Your normal server configuration here
+    root /var/www/example.com;
+    index index.php index.html;
+    
+    # PHP handling, etc.
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
+    }
+    
+    # Other configurations...
+}
+
+# Public-facing server block that proxies to Varnish
+server {
+    listen 80;
+    server_name example.com www.example.com;
+    
+    location / {
+        proxy_pass http://127.0.0.1:${VARNISH_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering on;
+    }
+}
+END
+
+    # Create a tool script to enable/disable Varnish for individual domains
+    cat > "/usr/local/bin/varnish-domain-config" << 'SCRIPT'
+#!/bin/bash
+
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 domain_name [enable|disable]"
+    exit 1
+fi
+
+DOMAIN="$1"
+ACTION="$2"
+VHOST_DIR="/etc/nginx/conf.d"
+BACKEND_PORT="8080"
+VARNISH_PORT="6081"
+
+if [ ! -f "$VHOST_DIR/$DOMAIN.conf" ]; then
+    echo "Error: Domain configuration not found at $VHOST_DIR/$DOMAIN.conf"
+    exit 1
+fi
+
+case "$ACTION" in
+    enable)
+        # Create backup if it doesn't exist
+        if [ ! -f "$VHOST_DIR/$DOMAIN.conf.novarnish" ]; then
+            cp "$VHOST_DIR/$DOMAIN.conf" "$VHOST_DIR/$DOMAIN.conf.novarnish"
         fi
-    done
+        
+        # Extract server_name
+        SERVER_NAMES=$(grep -E '^\s*server_name' "$VHOST_DIR/$DOMAIN.conf.novarnish" | head -1 | sed 's/server_name\s*//g' | sed 's/;//g')
+        
+        # Extract root directive
+        ROOT_DIR=$(grep -E '^\s*root' "$VHOST_DIR/$DOMAIN.conf.novarnish" | head -1 | sed 's/root\s*//g' | sed 's/;//g')
+        
+        # Extract PHP-FPM socket if available
+        PHP_FPM_SOCK=$(grep -E 'fastcgi_pass\s+unix:' "$VHOST_DIR/$DOMAIN.conf.novarnish" | head -1 | sed -E 's/.*fastcgi_pass\s+unix:([^;]+);.*/\1/g')
+        if [ -z "$PHP_FPM_SOCK" ]; then
+            PHP_FPM_SOCK="/var/run/php/php7.4-fpm.sock"
+        fi
+        
+        # Create the new config with Varnish
+        cat > "$VHOST_DIR/$DOMAIN.conf" << END
+# Backend server (Delivers content to Varnish)
+server {
+    listen $BACKEND_PORT;
+    server_name $SERVER_NAMES;
+    
+    root $ROOT_DIR;
+    index index.php index.html;
+    
+    # PHP handling
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:$PHP_FPM_SOCK;
+    }
+    
+    # Include other settings from original config (if needed)
+    # include /etc/nginx/custom/$DOMAIN/*.conf;
+}
+
+# Front-end server (Proxies to Varnish)
+server {
+    listen 80;
+    server_name $SERVER_NAMES;
+    
+    location / {
+        proxy_pass http://127.0.0.1:$VARNISH_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering on;
+    }
+}
+END
+        echo "Varnish cache enabled for $DOMAIN"
+        ;;
+        
+    disable)
+        # Restore the original config if backup exists
+        if [ -f "$VHOST_DIR/$DOMAIN.conf.novarnish" ]; then
+            cp "$VHOST_DIR/$DOMAIN.conf.novarnish" "$VHOST_DIR/$DOMAIN.conf"
+            echo "Varnish cache disabled for $DOMAIN"
+        else
+            echo "Error: Original configuration not found. Cannot disable Varnish."
+            exit 1
+        fi
+        ;;
+        
+    *)
+        echo "Invalid action. Use 'enable' or 'disable'."
+        exit 1
+        ;;
+esac
+
+# Test Nginx config
+nginx -t
+if [ $? -eq 0 ]; then
+    systemctl reload nginx
+    echo "Nginx configuration reloaded successfully."
+else
+    echo "Error in Nginx configuration. Please check and fix manually."
+    exit 1
+fi
+SCRIPT
+
+    # Make the script executable
+    chmod +x "/usr/local/bin/varnish-domain-config"
+    
+    printf "${GREEN}%s${NC}\n" "Script cau hinh Varnish cho tung domain da duoc tao tai: /usr/local/bin/varnish-domain-config"
+    printf "${GREEN}%s${NC}\n" "Su dung: varnish-domain-config ten_domain [enable|disable]"
     
     # Restart Nginx to apply changes
     if ! systemctl restart nginx; then
@@ -354,14 +501,28 @@ else
             printf "${RED}%s${NC}\n" "Cau hinh Nginx that bai. Vui long kiem tra lai."
             exit 1
         fi
-          clear
-        if service_running "varnish"; then
+          clear        if service_running "varnish"; then
             printf "${GREEN}%s${NC}\n" "Cai dat Varnish Cache thanh cong voi cac gia tri mac dinh:"
             printf "${GREEN}%s${NC}\n" "- Phien ban: ${VARNISH_VERSION}"
             printf "${GREEN}%s${NC}\n" "- Thu muc cai dat: ${VARNISH_INSTALL_DIR}"
             printf "${GREEN}%s${NC}\n" "- Bo nho toi da: ${MAX_MEMORY}MB"
-            printf "${GREEN}%s${NC}\n" "Nginx da duoc cau hinh de hoat dong voi Varnish Cache."
-            printf "${GREEN}%s${NC}\n" "De thay doi cau hinh, hay chinh sua file /etc/varnish/default.vcl"
+            printf "${GREEN}%s${NC}\n" "- Port Varnish: ${VARNISH_PORT}"
+            printf "${GREEN}%s${NC}\n" "- Port backend: ${BACKEND_PORT}"
+            printf "${GREEN}%s${NC}\n" "- Port Admin: ${VARNISH_ADMIN_PORT}"
+            printf "${GREEN}%s${NC}\n" ""
+            printf "${GREEN}%s${NC}\n" "KIEN TRUC HE THONG:"
+            printf "${GREEN}%s${NC}\n" "- Nguoi dung -> Nginx (port 80) -> Varnish (port ${VARNISH_PORT}) -> Backend (port ${BACKEND_PORT})"
+            printf "${GREEN}%s${NC}\n" ""
+            printf "${GREEN}%s${NC}\n" "HUONG DAN SU DUNG:"
+            printf "${GREEN}%s${NC}\n" "1. De BAT Varnish cho tung domain:"
+            printf "${GREEN}%s${NC}\n" "   varnish-domain-config ten_domain enable"
+            printf "${GREEN}%s${NC}\n" ""
+            printf "${GREEN}%s${NC}\n" "2. De TAT Varnish cho tung domain:"
+            printf "${GREEN}%s${NC}\n" "   varnish-domain-config ten_domain disable"
+            printf "${GREEN}%s${NC}\n" ""
+            printf "${GREEN}%s${NC}\n" "3. De thay doi cau hinh Varnish:"
+            printf "${GREEN}%s${NC}\n" "   - File VCL: /etc/varnish/default.vcl"
+            printf "${GREEN}%s${NC}\n" "   - File systemd: /lib/systemd/system/varnish.service"
         else
             systemctl status varnish
             printf "${RED}%s${NC}\n" "Cai dat Varnish Cache that bai hoac Varnish khong hoat dong."

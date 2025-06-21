@@ -1,0 +1,458 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/variable_php
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+# Make sure the varnish domains directory exists
+if [ ! -d "${NGINX_CONF_DIR}/varnish" ]; then
+    mkdir -p "${NGINX_CONF_DIR}/varnish"
+fi
+
+_select_ttl() {
+    while true; do
+        read -r -p "Nhap thoi gian cache (TTL) cho Varnish (gio, mac dinh: 24): " varnish_ttl
+        echo
+        if [[ -z "${varnish_ttl}" ]]; then
+            varnish_ttl=24
+            break
+        elif [[ "${varnish_ttl}" =~ ^[0-9]+$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_select_memory() {
+    while true; do
+        read -r -p "Nhap dung luong bo nho toi da cho Varnish (MB, mac dinh: 512): " varnish_memory
+        echo
+        if [[ -z "${varnish_memory}" ]]; then
+            varnish_memory=512
+            break
+        elif [[ "${varnish_memory}" =~ ^[0-9]+$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_update_varnish_config() {
+    # Update VCL file with new TTL
+    sed -i "s|set beresp.ttl = .*h;|set beresp.ttl = ${varnish_ttl}h;|g" /etc/varnish/default.vcl
+    
+    # Update systemd service file with new memory allocation
+    VARNISH_SERVICE_FILE=$(find /lib/systemd/system /etc/systemd/system -type f -name "varnish.service" | head -n1)
+    if [ -n "$VARNISH_SERVICE_FILE" ]; then
+        sed -i "s|-s malloc,[0-9]\+m|-s malloc,${varnish_memory}m|g" "$VARNISH_SERVICE_FILE"
+    else
+        printf "${RED}%s${NC}\n" "Khong tim thay file cau hinh varnish.service"
+        return 1
+    fi
+    
+    # Reload systemd daemon
+    systemctl daemon-reload
+    
+    return 0
+}
+
+_confirm_custom_config() {
+    printf "${GREEN}%s${NC}\n" "Ban co muon cau hinh nang cao cho Varnish khong?"
+    while true
+    do
+        read -r -p "Ban muon su dung cau hinh nang cao cho Varnish? (y/n, mac dinh: n) " prompt_custom_config
+        echo
+        if [[ -z "${prompt_custom_config}" ]]; then
+            prompt_custom_config="n"
+            break
+        elif [[ "${prompt_custom_config}" =~ ^([yY])$ || "${prompt_custom_config}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_confirm_domain_specific_config() {
+    printf "${GREEN}%s${NC}\n" "Ban co muon cap nhat cau hinh cho tung domain cu the khong?"
+    while true
+    do
+        read -r -p "Cap nhat cau hinh cho tung domain cu the? (y/n, mac dinh: n) " prompt_domain_specific
+        echo
+        if [[ -z "${prompt_domain_specific}" ]]; then
+            prompt_domain_specific="n"
+            break
+        elif [[ "${prompt_domain_specific}" =~ ^([yY])$ || "${prompt_domain_specific}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_select_domain_for_config() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            check_varnish_config=$(grep -w "use_varnish" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=' | grep -w "yes")
+            if [[ -n "${check_varnish_config}" ]]; then
+                domains+=("${domain}")
+            fi
+        done
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}Khong co domain nao su dung Varnish Cache.${NC}")
+        else
+            echo "Lua chon domain de cau hinh Varnish"
+            PS3="${INPUT_SELECT} [0 = Thoat]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_update_domain_config() {
+    local domain=$1
+    local user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
+    
+    # Ask for domain-specific TTL
+    read -r -p "Thoi gian cache (TTL) cho domain ${domain} (gio, mac dinh: ${varnish_ttl}): " domain_ttl
+    if [[ -z "${domain_ttl}" ]]; then
+        domain_ttl="${varnish_ttl}"
+    fi
+    
+    # Check if domain is WordPress
+    is_wordpress=false
+    if [ -d "/home/${user}/${domain}/public_html/wp-content" ]; then
+        is_wordpress=true
+    fi
+    
+    # Ask if domain uses WooCommerce (only if it's a WordPress site)
+    uses_woocommerce=false
+    if [ "$is_wordpress" = true ]; then
+        while true
+        do
+            read -r -p "Domain ${domain} co su dung WooCommerce khong? (y/n, mac dinh: n) " prompt_woocommerce
+            echo
+            if [[ -z "${prompt_woocommerce}" ]]; then
+                prompt_woocommerce="n"
+                break
+            elif [[ "${prompt_woocommerce}" =~ ^([yY])$ || "${prompt_woocommerce}" =~ ^([nN])$ ]]; then
+                if [[ "${prompt_woocommerce}" =~ ^([yY])$ ]]; then
+                    uses_woocommerce=true
+                fi
+                break
+            else
+                printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+            fi
+        done
+    fi
+    
+    # Create or update domain-specific config
+    cat > "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+# Varnish backend configuration for ${domain}
+backend ${domain//./_} {
+    .host = "127.0.0.1";
+    .port = "8080";
+    .connect_timeout = 300s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 300s;
+}
+END
+    
+    # Add WordPress-specific configuration
+    if [ "$is_wordpress" = true ]; then
+        cat >> "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+
+# WordPress specific configuration for ${domain}
+sub vcl_recv_${domain//./_} {
+    if (req.http.host == "${domain}" || req.http.host == "www.${domain}") {
+        # Don't cache WordPress admin, login or post pages
+        if (req.url ~ "wp-admin|wp-login|post\\.php|admin|login|preview=true") {
+            return (pass);
+        }
+END
+        
+        # Add WooCommerce-specific configuration if applicable
+        if [ "$uses_woocommerce" = true ]; then
+            cat >> "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+        
+        # Skip cache for WooCommerce pages
+        if (req.url ~ "/store.*|/cart.*|/my-account.*|/checkout.*|/addons.*") {
+            return (pass);
+        }
+
+        # Skip cache for WooCommerce cookies
+        if (req.http.Cookie ~ "woocommerce_items_in_cart|woocommerce_cart_hash|wp_woocommerce_session_") {
+            return (pass);
+        }
+END
+        fi
+        
+        cat >> "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+    }
+}
+
+sub vcl_backend_response_${domain//./_} {
+    if (bereq.http.host == "${domain}" || bereq.http.host == "www.${domain}") {
+        # Set domain-specific TTL
+        set beresp.ttl = ${domain_ttl}h;
+    }
+}
+END
+        
+        # Make sure the domain-specific subroutines are called from the main VCL
+        if ! grep -q "call vcl_recv_${domain//./_};" "/etc/varnish/default.vcl"; then
+            sed -i "/sub vcl_recv {/a\\    if (req.http.host == \"${domain}\" || req.http.host == \"www.${domain}\") { call vcl_recv_${domain//./_}; }" "/etc/varnish/default.vcl"
+        fi
+        
+        if ! grep -q "call vcl_backend_response_${domain//./_};" "/etc/varnish/default.vcl"; then
+            sed -i "/sub vcl_backend_response {/a\\    if (bereq.http.host == \"${domain}\" || bereq.http.host == \"www.${domain}\") { call vcl_backend_response_${domain//./_}; }" "/etc/varnish/default.vcl"
+        fi
+    fi
+    
+    # Update the include statement in default.vcl if it doesn't exist
+    if ! grep -q "include \"${NGINX_CONF_DIR}/varnish/${domain}.conf\";" "/etc/varnish/default.vcl"; then
+        sed -i "/vcl 4.1;/a\\include \"${NGINX_CONF_DIR}/varnish/${domain}.conf\";" "/etc/varnish/default.vcl"
+    fi
+    
+    printf "${GREEN}%s${NC}\n" "Da cap nhat cau hinh cho domain ${domain}."
+}
+
+_create_custom_config() {
+    # Create a backup of the current config
+    cp /etc/varnish/default.vcl /etc/varnish/default.vcl.backup
+    
+    # Ask user for specific WordPress optimizations
+    while true
+    do
+        read -r -p "Ban co muon toi uu hoa Varnish cho WordPress? (y/n, mac dinh: y) " wp_optimize
+        echo
+        if [[ -z "${wp_optimize}" ]]; then
+            wp_optimize="y"
+            break
+        elif [[ "${wp_optimize}" =~ ^([yY])$ || "${wp_optimize}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+    
+    # Create a new optimized config based on user's choices
+    cat > "/etc/varnish/default.vcl" << END
+vcl 4.1;
+
+# Default backend definition
+backend default {
+    .host = "127.0.0.1";
+    .port = "8080";
+    .connect_timeout = 300s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 300s;
+}
+
+# ACL for purging
+acl purge {
+    "localhost";
+    "127.0.0.1";
+}
+
+sub vcl_recv {
+    # Normalize the host header
+    if (req.http.host) {
+        set req.http.host = regsub(req.http.host, ":[0-9]+", "");
+    }
+    
+    # Normalize the query arguments
+    set req.url = std.querysort(req.url);
+    
+    # Allow purging
+    if (req.method == "PURGE") {
+        if (!client.ip ~ purge) {
+            return (synth(405, "Not allowed."));
+        }
+        return (purge);
+    }
+    
+    # Only cache GET and HEAD requests
+    if (req.method != "GET" && req.method != "HEAD") {
+        return (pass);
+    }
+END
+
+    # Add WordPress specific optimizations if selected
+    if [[ "${wp_optimize}" =~ ^([yY])$ ]]; then
+        cat >> "/etc/varnish/default.vcl" << END
+    
+    # Don't cache WordPress admin, login or post pages
+    if (req.url ~ "wp-admin|wp-login|post\\.php|admin|login|preview=true") {
+        return (pass);
+    }
+    
+    # Drop any cookies sent to WordPress
+    if (req.http.Cookie) {
+        if (req.url ~ "wp-content|wp-includes|wp-json") {
+            unset req.http.Cookie;
+        } else if (!(req.http.Cookie ~ "wordpress_logged_in_|wp-postpass_|woocommerce_cart_hash|woocommerce_items_in_cart")) {
+            unset req.http.Cookie;
+        }
+    }
+END
+    }
+    
+    # Complete the VCL configuration
+    cat >> "/etc/varnish/default.vcl" << END
+    
+    # Remove cookies for static files
+    if (req.url ~ "\\.(css|js|png|gif|jp(e)?g|swf|ico|woff|woff2|ttf|svg|eot)(\\?|$)") {
+        unset req.http.Cookie;
+    }
+    
+    return (hash);
+}
+
+sub vcl_hash {
+    hash_data(req.url);
+    if (req.http.host) {
+        hash_data(req.http.host);
+    } else {
+        hash_data(server.ip);
+    }
+    
+    # If the client supports compression, keep that in a different cache
+    if (req.http.Accept-Encoding) {
+        hash_data(req.http.Accept-Encoding);
+    }
+    
+    return (lookup);
+}
+
+sub vcl_backend_response {
+    # Don't cache 50x responses
+    if (beresp.status == 500 || beresp.status == 502 || beresp.status == 503 || beresp.status == 504) {
+        return (abandon);
+    }
+    
+    # Don't cache private or no-cache responses
+    if (beresp.http.Cache-Control ~ "private" || beresp.http.Cache-Control ~ "no-cache") {
+        return (pass);
+    }
+    
+    # Set the cache TTL
+    set beresp.ttl = ${varnish_ttl}h;
+    set beresp.grace = 6h;
+    
+    # Remove cookies for static files
+    if (bereq.url ~ "\\.(css|js|png|gif|jp(e)?g|swf|ico|woff|woff2|ttf|svg|eot)(\\?|$)") {
+        unset beresp.http.Set-Cookie;
+        set beresp.ttl = 30d;
+    }
+    
+    return (deliver);
+}
+
+sub vcl_deliver {
+    # Add debug headers
+    if (obj.hits > 0) {
+        set resp.http.X-Cache = "HIT";
+        set resp.http.X-Cache-Hits = obj.hits;
+    } else {
+        set resp.http.X-Cache = "MISS";
+    }
+    
+    # Remove certain headers
+    unset resp.http.Via;
+    unset resp.http.X-Varnish;
+    unset resp.http.Server;
+    
+    return (deliver);
+}
+END
+}
+
+_verify_varnish_config() {
+    # Check if varnishd is available
+    if ! command -v varnishd &> /dev/null; then
+        printf "${RED}%s${NC}\n" "Varnishd khong tim thay trong duong dan. Hay kiem tra lai cai dat Varnish."
+        return 1
+    fi
+    
+    # Verify the Varnish configuration syntax
+    local VARNISHD_PATH=$(command -v varnishd)
+    
+    if ! $VARNISHD_PATH -C -f /etc/varnish/default.vcl &> /dev/null; then
+        printf "${RED}%s${NC}\n" "Loi cu phap trong file cau hinh Varnish. Chi tiet:"
+        $VARNISHD_PATH -C -f /etc/varnish/default.vcl
+        return 1
+    fi
+    
+    return 0
+}
+
+# Main execution
+if [ ! -f "/etc/varnish/default.vcl" ]; then
+    printf "${RED}%s${NC}\n" "Varnish chua duoc cai dat. Hay cai dat Varnish truoc."
+else
+    _select_ttl
+    _select_memory
+    _confirm_custom_config
+    
+    if [[ "${prompt_custom_config}" =~ ^([yY])$ ]]; then
+        _create_custom_config
+    else
+        _update_varnish_config
+    fi
+    
+    # Domain-specific configuration
+    _confirm_domain_specific_config
+    if [[ "${prompt_domain_specific}" =~ ^([yY])$ ]]; then
+        _select_domain_for_config
+        
+        if [[ -n "${domain}" && -z "${ALERT}" ]]; then
+            _update_domain_config "${domain}"
+        elif [ -n "${ALERT}" ]; then
+            printf "%s\n" "${ALERT}"
+        fi
+    fi
+    
+    # Verify the configuration
+    if ! _verify_varnish_config; then
+        printf "${RED}%s${NC}\n" "Cau hinh Varnish co loi. Dang khoi phuc cau hinh sao luu..."
+        if [ -f "/etc/varnish/default.vcl.backup" ]; then
+            cp /etc/varnish/default.vcl.backup /etc/varnish/default.vcl
+            printf "${GREEN}%s${NC}\n" "Da khoi phuc cau hinh Varnish tu file sao luu."
+        else
+            printf "${RED}%s${NC}\n" "Khong tim thay file sao luu cau hinh. Vui long kiem tra lai cau hinh Varnish."
+        fi
+    else
+        printf "${GREEN}%s${NC}\n" "Cap nhat cau hinh Varnish thanh cong."
+        if service_running "varnish"; then
+            systemctl restart varnish.service
+            printf "${GREEN}%s${NC}\n" "Varnish da duoc khoi dong lai voi cau hinh moi."
+        else
+            printf "${YELLOW}%s${NC}\n" "Varnish hien dang tat. Hay bat Varnish de ap dung cau hinh moi."
+        fi
+    fi
+fi
+
+cache_manage_varnish

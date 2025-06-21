@@ -1,0 +1,30 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Define function paths for Varnish Cache
+cache_manage_varnish(){
+    bash /var/hostvn/menu/controller/cache/manage_varnish
+}
+
+cache_install_varnish(){
+    bash /var/hostvn/menu/controller/cache/install_varnish
+}
+
+cache_update_varnish_config(){
+    bash /var/hostvn/menu/controller/cache/update_varnish_config
+}
+
+cache_purge_varnish(){
+    bash /var/hostvn/menu/controller/cache/purge_varnish
+}
+
+# Add this to the end of the parent route file

@@ -1,0 +1,400 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/variable_php
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+# Default settings for Varnish installation
+VARNISH_VERSION="7.7.1"
+VARNISH_INSTALL_DIR="/usr/local"
+MAX_MEMORY="512"
+
+_confirm(){
+    while true
+    do
+        read -r -p "Ban muon cai dat Varnish Cache? (y/n) " prompt_varnish
+        echo
+        if [[ "${prompt_varnish}" =~ ^([yY])$ || "${prompt_varnish}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_confirm_advanced_settings(){
+    while true
+    do
+        read -r -p "Ban muon cau hinh nang cao cho viec cai dat Varnish? (y/n) " prompt_advanced
+        echo
+        if [[ "${prompt_advanced}" =~ ^([yY])$ || "${prompt_advanced}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_configure_advanced_settings(){
+    printf "${GREEN}%s${NC}\n" "Nhap cac thong so cau hinh cho Varnish:"
+    
+    # Ask for version
+    read -r -p "Phien ban Varnish (mac dinh: ${VARNISH_VERSION}): " custom_version
+    if [[ -n "${custom_version}" ]]; then
+        VARNISH_VERSION="${custom_version}"
+    fi
+    
+    # Ask for installation directory
+    read -r -p "Thu muc cai dat (prefix) (mac dinh: ${VARNISH_INSTALL_DIR}): " custom_install_dir
+    if [[ -n "${custom_install_dir}" ]]; then
+        VARNISH_INSTALL_DIR="${custom_install_dir}"
+    fi
+    
+    # Ask for memory allocation
+    read -r -p "Dung luong bo nho toi da cho Varnish (MB) (mac dinh: ${MAX_MEMORY}): " custom_memory
+    if [[ -n "${custom_memory}" ]]; then
+        MAX_MEMORY="${custom_memory}"
+    fi
+    
+    # Ask for additional configure flags
+    read -r -p "Tham so mo rong cho ./configure (vi du: --mandir=/usr/share/man): " EXTRA_FLAGS
+    
+    # Ask for CFLAGS
+    read -r -p "CFLAGS (vi du: -O2 -g): " CUSTOM_CFLAGS
+    
+    # Ask for CPPFLAGS
+    read -r -p "CPPFLAGS (vi du: -I/usr/local/include): " CUSTOM_CPPFLAGS
+    
+    # Ask for LDFLAGS
+    read -r -p "LDFLAGS (vi du: -L/usr/local/lib): " CUSTOM_LDFLAGS
+}
+
+_install_dependencies(){
+    printf "${GREEN}%s${NC}\n" "Dang cai dat cac goi phu thuoc..."
+    apt-get update -y
+    if ! apt-get install -y build-essential pkg-config python3-sphinx python3-docutils graphviz automake libedit-dev libjemalloc-dev libncurses-dev libpcre3-dev libtool; then
+        printf "${RED}%s${NC}\n" "Khong the cai dat cac goi phu thuoc. Vui long kiem tra lai."
+        return 1
+    fi
+    return 0
+}
+
+_install_varnish_from_source(){
+    printf "${GREEN}%s${NC}\n" "Dang cai dat Varnish Cache tu source..."
+    
+    # Create temporary directory for building
+    mkdir -p /tmp/varnish-build
+    _cd_dir /tmp/varnish-build
+    
+    # Download Varnish source
+    if ! wget -q "https://varnish-cache.org/downloads/varnish-${VARNISH_VERSION}.tgz"; then
+        printf "${RED}%s${NC}\n" "Khong the tai phan ban Varnish ${VARNISH_VERSION}. Vui long kiem tra lai."
+        return 1
+    fi
+    
+    # Extract Varnish source
+    if ! tar -xzf "varnish-${VARNISH_VERSION}.tgz"; then
+        printf "${RED}%s${NC}\n" "Khong the giai nen Varnish. Vui long kiem tra lai."
+        return 1
+    fi
+    
+    _cd_dir "varnish-${VARNISH_VERSION}"
+    
+    # Build configure command
+    CONFIGURE_CMD="./configure --prefix=${VARNISH_INSTALL_DIR}"
+    
+    if [[ -n "${EXTRA_FLAGS}" ]]; then
+        CONFIGURE_CMD="${CONFIGURE_CMD} ${EXTRA_FLAGS}"
+    fi
+    
+    # Set environment variables if defined
+    if [[ -n "${CUSTOM_CFLAGS}" ]]; then
+        export CFLAGS="${CUSTOM_CFLAGS}"
+    fi
+    
+    if [[ -n "${CUSTOM_CPPFLAGS}" ]]; then
+        export CPPFLAGS="${CUSTOM_CPPFLAGS}"
+    fi
+    
+    if [[ -n "${CUSTOM_LDFLAGS}" ]]; then
+        export LDFLAGS="${CUSTOM_LDFLAGS}"
+    fi
+    
+    # Configure
+    printf "${GREEN}%s${NC}\n" "Chay cau hinh: ${CONFIGURE_CMD}"
+    if ! eval "${CONFIGURE_CMD}"; then
+        printf "${RED}%s${NC}\n" "Loi trong qua trinh cau hinh Varnish. Vui long kiem tra logs."
+        return 1
+    fi
+    
+    # Make and install
+    if ! make -j"$(nproc)"; then
+        printf "${RED}%s${NC}\n" "Loi trong qua trinh bien dich Varnish. Vui long kiem tra logs."
+        return 1
+    fi
+    
+    if ! make install; then
+        printf "${RED}%s${NC}\n" "Loi trong qua trinh cai dat Varnish. Vui long kiem tra logs."
+        return 1
+    fi
+    
+    ldconfig
+    
+    # Check if varnishd is installed
+    if [[ ! -f "${VARNISH_INSTALL_DIR}/sbin/varnishd" ]]; then
+        printf "${RED}%s${NC}\n" "Khong tim thay ${VARNISH_INSTALL_DIR}/sbin/varnishd. Cai dat that bai."
+        return 1
+    fi
+    
+    # Create varnish user and group
+    if ! id -u varnish > /dev/null 2>&1; then
+        useradd -r -l -U varnish
+    fi
+    
+    # Create necessary directories
+    mkdir -p /etc/varnish
+    mkdir -p /var/lib/varnish
+    chown varnish:varnish /var/lib/varnish
+    
+    # Create basic configuration
+    cat > "/etc/varnish/default.vcl" << END
+vcl 4.1;
+
+# Default backend definition
+backend default {
+    .host = "127.0.0.1";
+    .port = "8080";
+    .connect_timeout = 300s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 300s;
+}
+
+# ACL for purging
+acl purge {
+    "localhost";
+    "127.0.0.1";
+}
+
+sub vcl_recv {
+    # Normalize the host header
+    if (req.http.host) {
+        set req.http.host = regsub(req.http.host, ":[0-9]+", "");
+    }
+    
+    # Normalize the query arguments
+    set req.url = std.querysort(req.url);
+    
+    # Allow purging
+    if (req.method == "PURGE") {
+        if (!client.ip ~ purge) {
+            return (synth(405, "Not allowed."));
+        }
+        return (purge);
+    }
+    
+    # Only cache GET and HEAD requests
+    if (req.method != "GET" && req.method != "HEAD") {
+        return (pass);
+    }
+    
+    # Don't cache auth or logged in users
+    if (req.http.Authorization || req.http.Cookie ~ "wordpress_logged_in_") {
+        return (pass);
+    }
+    
+    # Don't cache admin or login pages
+    if (req.url ~ "wp-admin|wp-login") {
+        return (pass);
+    }
+    
+    # Remove cookies that we don't need
+    if (req.http.Cookie) {
+        set req.http.Cookie = regsuball(req.http.Cookie, "(^|;\\s*)(_[_a-z]+|has_js)=[^;]*", "");
+        set req.http.Cookie = regsuball(req.http.Cookie, "^\\s*;\\s*", "");
+        if (req.http.Cookie == "") {
+            unset req.http.Cookie;
+        }
+    }
+    
+    # Remove the "has_js" cookie
+    set req.http.Cookie = regsuball(req.http.Cookie, "has_js=[^;]+(; )?", "");
+    
+    # Remove the WP Cookie and Google Analytics __* cookies.
+    set req.http.Cookie = regsuball(req.http.Cookie, "(wp-settings-\d+=[^;]*|wp-settings-time-\d+=[^;]*|__utm.=[^;]*|__qc.=[^;]*|_ga=[^;]*|_gat=[^;]*|_dc_gtm_UA-\d+-\d+=[^;]*)(?:; )?", "");
+    
+    # Remove the Google Analytics _ga_* cookies
+    set req.http.Cookie = regsuball(req.http.Cookie, "_ga_[A-Z0-9]+=[^;]+(;[ ]+)?", "");
+    
+    # Remove empty cookies.
+    if (req.http.Cookie ~ "^\s*$") {
+        unset req.http.Cookie;
+    }
+    
+    return (hash);
+}
+
+sub vcl_hash {
+    hash_data(req.url);
+    if (req.http.host) {
+        hash_data(req.http.host);
+    } else {
+        hash_data(server.ip);
+    }
+    return (lookup);
+}
+
+sub vcl_backend_response {
+    # Don't cache 50x responses
+    if (beresp.status == 500 || beresp.status == 502 || beresp.status == 503 || beresp.status == 504) {
+        return (abandon);
+    }
+    
+    # Don't cache private or no-cache responses
+    if (beresp.http.Cache-Control ~ "private" || beresp.http.Cache-Control ~ "no-cache") {
+        return (pass);
+    }
+    
+    # Set the cache TTL
+    set beresp.ttl = 24h;
+    set beresp.grace = 6h;
+    
+    # Remove cookies for static files
+    if (bereq.url ~ "\\.(css|js|png|gif|jp(e)?g|swf|ico|woff|woff2|ttf|svg|eot)(\\?|$)") {
+        unset beresp.http.Set-Cookie;
+    }
+    
+    return (deliver);
+}
+
+sub vcl_deliver {
+    # Add debug headers
+    if (obj.hits > 0) {
+        set resp.http.X-Cache = "HIT";
+        set resp.http.X-Cache-Hits = obj.hits;
+    } else {
+        set resp.http.X-Cache = "MISS";
+    }
+    
+    # Remove certain headers
+    unset resp.http.Via;
+    unset resp.http.X-Varnish;
+    unset resp.http.Server;
+    
+    return (deliver);
+}
+END
+
+    # Create systemd service file
+    cat > "/lib/systemd/system/varnish.service" << END
+[Unit]
+Description=Varnish HTTP accelerator
+Documentation=https://www.varnish-cache.org/docs/
+After=network-online.target nss-lookup.target
+
+[Service]
+Type=forking
+LimitNOFILE=131072
+LimitMEMLOCK=82000
+ExecStart=${VARNISH_INSTALL_DIR}/sbin/varnishd -a :80 -f /etc/varnish/default.vcl -s malloc,${MAX_MEMORY}m -T localhost:6082 -p default_ttl=3600 -p default_grace=3600
+ExecReload=${VARNISH_INSTALL_DIR}/bin/varnishadm "vcl.load reload-\$(date +%%s) /etc/varnish/default.vcl" \
+             && ${VARNISH_INSTALL_DIR}/bin/varnishadm "vcl.use reload-\$(date +%%s)"
+User=varnish
+Group=varnish
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestartSec=5s
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+END
+
+    # Cleanup build files
+    _cd_dir /tmp
+    rm -rf /tmp/varnish-build
+    
+    # Enable and start Varnish
+    systemctl daemon-reload
+    systemctl enable varnish.service
+    
+    return 0
+}
+
+_configure_nginx_for_varnish() {
+    printf "${GREEN}%s${NC}\n" "Dang cau hinh Nginx de hoat dong voi Varnish..."
+    
+    # Update Nginx vhosts to listen on 8080 instead of 80
+    _cd_dir "${VHOST_DIR}"
+    for domain_conf in *.conf; do
+        if [ -f "${domain_conf}" ]; then
+            # Change listen port from 80 to 8080
+            sed -i 's/listen 80;/listen 8080;/g' "${domain_conf}"
+        fi
+    done
+    
+    # Restart Nginx to apply changes
+    if ! systemctl restart nginx; then
+        printf "${RED}%s${NC}\n" "Khong the khoi dong lai Nginx. Vui long kiem tra cau hinh."
+        return 1
+    fi
+    
+    return 0
+}
+
+if service_running "varnish"; then
+    printf "${GREEN}%s${NC}\n" "Varnish Cache da ton tai tren VPS."
+else
+    _confirm
+    
+    if [[ "${prompt_varnish}" =~ ^([yY])$ ]]; then
+        # Ask for advanced settings
+        _confirm_advanced_settings
+        if [[ "${prompt_advanced}" =~ ^([yY])$ ]]; then
+            _configure_advanced_settings
+        fi
+        
+        # Install dependencies
+        if ! _install_dependencies; then
+            printf "${RED}%s${NC}\n" "Cai dat cac goi phu thuoc that bai. Vui long kiem tra lai."
+            exit 1
+        fi
+        
+        # Install Varnish
+        if ! _install_varnish_from_source; then
+            printf "${RED}%s${NC}\n" "Cai dat Varnish that bai. Vui long kiem tra lai."
+            exit 1
+        fi
+        
+        # Configure Nginx
+        if ! _configure_nginx_for_varnish; then
+            printf "${RED}%s${NC}\n" "Cau hinh Nginx that bai. Vui long kiem tra lai."
+            exit 1
+        fi
+        
+        clear
+        if service_running "varnish"; then
+            printf "${GREEN}%s${NC}\n" "Cai dat Varnish Cache thanh cong."
+            printf "${GREEN}%s${NC}\n" "Nginx da duoc cau hinh de hoat dong voi Varnish Cache."
+            printf "${GREEN}%s${NC}\n" "Varnish da duoc cai dat tai: ${VARNISH_INSTALL_DIR}"
+        else
+            systemctl status varnish
+            printf "${RED}%s${NC}\n" "Cai dat Varnish Cache that bai hoac Varnish khong hoat dong."
+        fi
+    else
+        printf "${RED}%s${NC}\n" "Ban da huy bo cai dat Varnish Cache."
+    fi
+fi
+
+cache_manage_varnish

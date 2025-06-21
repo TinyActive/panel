@@ -1,0 +1,104 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_select_domain_for_purge() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            check_varnish_config=$(grep -w "use_varnish" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=' | grep -w "yes")
+            if [[ -n "${check_varnish_config}" ]]; then
+                domains+=("${domain}")
+            fi
+        done
+        domains+=("ALL")
+        
+        echo "Lua chon domain de xoa cache (Chon ALL de xoa cache cho tat ca domain)"
+        PS3="${INPUT_SELECT} [0 = Thoat]: "
+        select opt in "${domains[@]}"; do
+            domain=$opt
+            break
+        done
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_purge_varnish_cache() {
+    local purge_domain=$1
+    
+    printf "${GREEN}%s\n${NC}" "Dang xoa cache Varnish. Vui long doi..."
+    sleep 1
+    
+    if service_running "varnish"; then
+        # Make sure varnishadm is available
+        local VARNISHADM_PATH="varnishadm"
+        if [ -f "/usr/local/bin/varnishadm" ]; then
+            VARNISHADM_PATH="/usr/local/bin/varnishadm"
+        elif [ -f "/usr/bin/varnishadm" ]; then
+            VARNISHADM_PATH="/usr/bin/varnishadm"
+        fi
+        
+        # Purge based on domain
+        if [[ "${purge_domain}" == "ALL" ]]; then
+            ${VARNISHADM_PATH} "ban req.url ~ ."
+            printf "${GREEN}%s\n${NC}" "Xoa toan bo cache Varnish thanh cong."
+        else
+            ${VARNISHADM_PATH} "ban req.http.host == ${purge_domain}"
+            ${VARNISHADM_PATH} "ban req.http.host == www.${purge_domain}"
+            printf "${GREEN}%s\n${NC}" "Xoa cache Varnish cho domain ${purge_domain} thanh cong."
+        fi
+    else
+        printf "${RED}%s\n${NC}" "Varnish khong hoat dong. Khong the xoa cache."
+    fi
+}
+
+_confirm_purge() {
+    printf "${GREEN}%s${NC}\n" "Ban muon xoa cache Varnish cho mot domain cu the hay toan bo?"
+    while true
+    do
+        read -r -p "Xoa cache cho domain cu the? (y/n, mac dinh: n) " prompt_specific_domain
+        echo
+        if [[ -z "${prompt_specific_domain}" ]]; then
+            prompt_specific_domain="n"
+            break
+        elif [[ "${prompt_specific_domain}" =~ ^([yY])$ || "${prompt_specific_domain}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n"  "${RED}Gia tri khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_confirm_purge
+
+if [[ "${prompt_specific_domain}" =~ ^([yY])$ ]]; then
+    _select_domain_for_purge
+    
+    if [[ -n "${domain}" && -z "${ALERT}" ]]; then
+        _purge_varnish_cache "${domain}"
+    elif [ -n "${ALERT}" ]; then
+        printf "%s\n" "${ALERT}"
+    fi
+else
+    _purge_varnish_cache "ALL"
+fi
+
+sleep 2
+cache_manage_varnish

@@ -1,0 +1,433 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/route/parent
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+# Make sure the varnish domains directory exists
+if [ ! -d "${NGINX_CONF_DIR}/varnish" ]; then
+    mkdir -p "${NGINX_CONF_DIR}/varnish"
+fi
+
+CHOICE=1
+varnish_status=$(pgrep varnishd >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${GREEN}Khong hoat dong${NC}")
+
+if [ ! -f "/lib/systemd/system/varnish.service" ]; then
+    varnish_status="Chua cai dat"
+fi
+
+printf "${GREEN}%s${NC}\n" "====================="
+printf "${GREEN}%s${NC}\n" "Quan ly Varnish Cache"
+printf "${GREEN}%s${NC}\n" "${GREEN}Trang thai:${NC} ${varnish_status}"
+printf "${GREEN}%s${NC}\n" "====================="
+
+_select_domain_enable_varnish() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            check_varnish_config=$(grep -w "use_varnish" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=' | grep -w "yes")
+            if [[ -z "${check_varnish_config}" ]]; then
+                domains+=("${domain}")
+            fi
+        done
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}Tat ca cac website deu da duoc cau hinh su dung Varnish Cache.${NC}")
+        else
+            echo "Lua chon website"
+            PS3="${INPUT_SELECT} [0 = Thoat]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_select_domain_disable_varnish() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            check_varnish_config=$(grep -w "use_varnish" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=' | grep -w "yes")
+            if [[ -n "${check_varnish_config}" ]]; then
+                domains+=("${domain}")
+            fi
+        done
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}Khong co website nao dang su dung Varnish Cache.${NC}")
+        else
+            echo "Lua chon website"
+            PS3="${INPUT_SELECT} [0 = Thoat]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_enable_varnish_for_domain() {
+    local domain=$1
+    local user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
+    
+    # Check if domain is using SSL
+    local using_ssl=$(grep -w "ssl" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
+    
+    # Create domain-specific config for Varnish
+    if [ ! -f "${NGINX_CONF_DIR}/varnish/${domain}.conf" ]; then
+        cat > "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+# Varnish backend configuration for ${domain}
+backend ${domain//./_} {
+    .host = "127.0.0.1";
+    .port = "8080";
+    .connect_timeout = 300s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 300s;
+}
+END
+    fi
+    
+    # Update Nginx vhost to listen on 8080 instead of 80
+    sed -i 's/listen 80;/listen 8080;/g' "${VHOST_DIR}/${domain}.conf"
+    
+    # Mark domain as using Varnish
+    grep -q "use_varnish" "${USER_DIR}/.${domain}.conf" && \
+        sed -i '/use_varnish/d' "${USER_DIR}/.${domain}.conf"
+    echo "use_varnish=yes" >> "${USER_DIR}/.${domain}.conf"
+    
+    # Update default.vcl to include domain-specific configuration
+    if ! grep -q "include \"${NGINX_CONF_DIR}/varnish/${domain}.conf\";" "/etc/varnish/default.vcl"; then
+        # Insert the include after vcl 4.1; line
+        sed -i "/vcl 4.1;/a\\include \"${NGINX_CONF_DIR}/varnish/${domain}.conf\";" "/etc/varnish/default.vcl"
+    fi
+    
+    # Check if domain is WordPress and configure special rules if needed
+    if [ -d "/home/${user}/${domain}/public_html/wp-content" ]; then
+        cat >> "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+
+# WordPress specific configuration for ${domain}
+sub vcl_recv_${domain//./_} {
+    if (req.http.host == "${domain}" || req.http.host == "www.${domain}") {
+        # Don't cache WordPress admin, login or post pages
+        if (req.url ~ "wp-admin|wp-login|post\\.php|admin|login|preview=true") {
+            return (pass);
+        }
+        
+        # Skip cache for WooCommerce if present
+        if (req.url ~ "/store.*|/cart.*|/my-account.*|/checkout.*|/addons.*") {
+            return (pass);
+        }
+    }
+}
+END
+
+        # Update default.vcl to call domain-specific subroutines
+        if ! grep -q "call vcl_recv_${domain//./_};" "/etc/varnish/default.vcl"; then
+            sed -i "/sub vcl_recv {/a\\    if (req.http.host == \"${domain}\" || req.http.host == \"www.${domain}\") { call vcl_recv_${domain//./_}; }" "/etc/varnish/default.vcl"
+        fi
+    fi
+}
+
+_disable_varnish_for_domain() {
+    local domain=$1
+    
+    # Update Nginx vhost to listen on 80 instead of 8080
+    sed -i 's/listen 8080;/listen 80;/g' "${VHOST_DIR}/${domain}.conf"
+    
+    # Remove domain from Varnish config
+    if grep -q "include \"${NGINX_CONF_DIR}/varnish/${domain}.conf\";" "/etc/varnish/default.vcl"; then
+        sed -i "/include \"${NGINX_CONF_DIR}\/varnish\/${domain}.conf\";/d" "/etc/varnish/default.vcl"
+    fi
+    
+    # Remove domain-specific subroutine call
+    sed -i "/call vcl_recv_${domain//./_};/d" "/etc/varnish/default.vcl"
+    
+    # Remove domain-specific varnish config file
+    if [ -f "${NGINX_CONF_DIR}/varnish/${domain}.conf" ]; then
+        rm -f "${NGINX_CONF_DIR}/varnish/${domain}.conf"
+    fi
+    
+    # Update domain config to indicate it's not using Varnish
+    grep -q "use_varnish" "${USER_DIR}/.${domain}.conf" && \
+        sed -i '/use_varnish/d' "${USER_DIR}/.${domain}.conf"
+    echo "use_varnish=no" >> "${USER_DIR}/.${domain}.conf"
+}
+
+_varnish_domain_action() {
+    clear
+    printf "%s\n" "Lua chon thao tac ban muon thuc hien"
+    PS3="Nhap vao lua chon cua ban [ 1 - 3 ]: "
+    options=("Bat Varnish cho domain" "Tat Varnish cho domain" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Bat Varnish cho domain")
+            action="enable_domain"
+            break
+            ;;
+        "Tat Varnish cho domain")
+            action="disable_domain"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long chon lai. $REPLY" ;;
+        esac
+    done
+    sleep 1
+}
+
+while [ "${CHOICE}" != "0" ]; do
+    printf "${GREEN}%s${NC}\n" "1. Bat/Tat Varnish Cache cho domain"
+    printf "${GREEN}%s${NC}\n" "2. Bat Varnish Cache toan bo he thong"
+    printf "${GREEN}%s${NC}\n" "3. Tat Varnish Cache toan bo he thong"
+    printf "${GREEN}%s${NC}\n" "4. Cai dat Varnish cache"
+    printf "${GREEN}%s${NC}\n" "5. Go bo Varnish Cache"
+    printf "${GREEN}%s${NC}\n" "6. Cap nhap cau hinh Varnish"
+    printf "${GREEN}%s${NC}\n" "7. Xoa cache Varnish"
+    printf "${GREEN}%s${NC}\n" "======================"
+    read -r -p " Nhap vao lua chon cua ban [0 = Thoat] " CHOICE
+
+    if [ -z "${CHOICE}" ]; then
+        CHOICE=1
+        continue
+    fi
+    case ${CHOICE} in
+    1)
+        _varnish_domain_action
+        
+        if [[ "${action}" == "enable_domain" ]]; then
+            if [ ! -f "/lib/systemd/system/varnish.service" ]; then
+                clear
+                printf "%s\n" "${RED}Varnish chua duoc cai dat. Vui long cai dat truoc.${NC}"
+                cache_manage_varnish
+                continue
+            elif ! service_running "varnish"; then
+                clear
+                printf "%s\n" "${RED}Varnish khong hoat dong. Vui long bat Varnish truoc.${NC}"
+                cache_manage_varnish
+                continue
+            fi
+            
+            _select_domain_enable_varnish
+            
+            if [[ -z "${domain}" && -z "${ALERT}" ]]; then
+                clear
+                printf "%s\n" "${RED}Ban da chon huy thao tac${NC}"
+            else
+                if [ -z "${ALERT}" ]; then
+                    # Enable Varnish for the domain
+                    _enable_varnish_for_domain "${domain}"
+                    
+                    # Reload Varnish and Nginx
+                    systemctl reload varnish
+                    systemctl reload nginx
+                    
+                    clear
+                    printf "%s\n" "${GREEN}Da bat Varnish Cache cho domain ${domain}.${NC}"
+                else
+                    clear
+                    printf "%s\n" "${ALERT}"
+                fi
+            fi
+            
+        elif [[ "${action}" == "disable_domain" ]]; then
+            _select_domain_disable_varnish
+            
+            if [[ -z "${domain}" && -z "${ALERT}" ]]; then
+                clear
+                printf "%s\n" "${RED}Ban da chon huy thao tac${NC}"
+            else
+                if [ -z "${ALERT}" ]; then
+                    # Disable Varnish for the domain
+                    _disable_varnish_for_domain "${domain}"
+                    
+                    # Reload Varnish and Nginx if Varnish is running
+                    if service_running "varnish"; then
+                        systemctl reload varnish
+                    fi
+                    systemctl reload nginx
+                    
+                    clear
+                    printf "%s\n" "${GREEN}Da tat Varnish Cache cho domain ${domain}.${NC}"
+                else
+                    clear
+                    printf "%s\n" "${ALERT}"
+                fi
+            fi
+        fi
+        
+        cache_manage_varnish
+        ;;
+    2)
+        if [ ! -f "/lib/systemd/system/varnish.service" ]; then
+            clear
+            printf "%s\n" "${RED}Varnish chua duoc cai dat.${NC}"
+        elif service_running "varnish"; then
+            clear
+            printf "${RED}%s${NC}\n" "Varnish dang hoat dong."
+        else
+            printf "%s\n" "${GREEN}Dang tien hanh mo Varnish Cache...${NC}"
+            sleep 1
+            systemctl enable varnish.service
+            systemctl start varnish.service
+            
+            # Add a cron job to restart Varnish periodically
+            cron_exists=$(crontab -l | grep -w 'varnish')
+            if [ -z "${cron_exists}" ]; then
+                crontab -l >clear_varnish
+                echo "23 */39 * * * systemctl restart varnish >/dev/null 2>&1" >>clear_varnish
+                crontab clear_varnish
+                rm -rf clear_varnish
+            fi
+            clear
+            printf "%s\n" "${GREEN}Da bat Varnish Cache toan bo he thong.${NC}"
+        fi
+        cache_manage_varnish
+        ;;
+    3)
+        if service_running "varnish"; then
+            printf "%s\n" "${GREEN}Dang tien hanh tat Varnish Cache...${NC}"
+            sleep 1
+            systemctl stop varnish.service
+            systemctl disable varnish.service
+            
+            # Remove the cron job
+            cron_exists=$(crontab -l | grep -w 'varnish')
+            if [ -n "${cron_exists}" ]; then
+                crontab -u root -l | grep -v "varnish" | crontab -u root -
+            fi
+            clear
+            printf "%s\n" "${GREEN}Da tat Varnish Cache toan bo he thong.${NC}"
+        else
+            clear
+            printf "%s\n" "${RED}Varnish cache hien khong hoat dong.${NC}"
+        fi
+
+        cache_manage_varnish
+        ;;
+    4) 
+        cache_install_varnish 
+        ;;
+    5)
+        if [ -f "/lib/systemd/system/varnish.service" ]; then
+            printf "%s\n" "${GREEN}Dang tien hanh go bo Varnish Cache...${NC}"
+            systemctl stop varnish.service
+            systemctl disable varnish.service
+            
+            # Reset all domains to not use Varnish
+            _cd_dir "${USER_DIR}"
+            for entry in .*.conf; do
+                domain=${entry/./}
+                domain=${domain//.conf/}
+                check_varnish_config=$(grep -w "use_varnish" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=' | grep -w "yes")
+                if [[ -n "${check_varnish_config}" ]]; then
+                    # Update Nginx vhost to listen on 80 instead of 8080
+                    sed -i 's/listen 8080;/listen 80;/g' "${VHOST_DIR}/${domain}.conf"
+                    # Update domain config
+                    grep -q "use_varnish" "${USER_DIR}/.${domain}.conf" && \
+                        sed -i '/use_varnish/d' "${USER_DIR}/.${domain}.conf"
+                    echo "use_varnish=no" >> "${USER_DIR}/.${domain}.conf"
+                fi
+            done
+            
+            # Restart Nginx to apply changes
+            systemctl restart nginx
+            
+            # Remove Varnish and its files
+            if command -v apt-get &> /dev/null; then
+                apt-get purge --auto-remove varnish -y
+                apt autoremove -y
+            else
+                # If not using apt (custom built)
+                rm -f /lib/systemd/system/varnish.service
+                rm -f /usr/local/sbin/varnishd
+                rm -f /usr/local/bin/varnishadm
+            fi
+            
+            # Remove varnish files
+            rm -rf /etc/varnish
+            rm -rf /var/lib/varnish
+            rm -rf "${NGINX_CONF_DIR}/varnish"
+            
+            # Remove cron job
+            cron_exists=$(crontab -l | grep -w 'varnish')
+            if [ -n "${cron_exists}" ]; then
+                crontab -u root -l | grep -v "varnish" | crontab -u root -
+            fi
+            systemctl daemon-reload
+            clear
+            printf "${GREEN}%s\n${NC}" "Go bo Varnish Cache thanh cong."
+            printf "${GREEN}%s\n${NC}" "Nginx da duoc cap nhat de hoat dong binh thuong."
+        else
+            clear
+            printf "${RED}%s\n${NC}" "Varnish Cache chua duoc cai dat."
+        fi
+        cache_manage_varnish
+        ;;
+    6)
+        if [ ! -f "/lib/systemd/system/varnish.service" ]; then
+            clear
+            printf "%s\n" "${RED}Varnish chua duoc cai dat.${NC}"
+        else
+            printf "%s\n" "${GREEN}Dang tien hanh cap nhat cau hinh Varnish...${NC}"
+            sleep 1
+            
+            # Update VCL configuration file
+            cache_update_varnish_config
+            
+            if service_running "varnish"; then
+                systemctl restart varnish.service
+                printf "%s\n" "${GREEN}Varnish da duoc khoi dong lai voi cau hinh moi.${NC}"
+            fi
+            clear
+            printf "%s\n" "${GREEN}Cap nhat cau hinh Varnish thanh cong.${NC}"
+        fi
+        cache_manage_varnish
+        ;;
+    7)
+        if [ ! -f "/lib/systemd/system/varnish.service" ]; then
+            clear
+            printf "%s\n" "${RED}Varnish chua duoc cai dat.${NC}"
+        elif service_running "varnish"; then
+            cache_purge_varnish
+        else
+            clear
+            printf "%s\n" "${RED}Varnish khong hoat dong.${NC}"
+        fi
+        cache_manage_varnish
+        ;;
+    0)
+        clear
+        menu_cache
+        ;;
+    *)
+        clear
+        printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long chon lai.${NC}"
+        ;;
+    esac
+done

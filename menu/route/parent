@@ -126,6 +126,22 @@ cache_fastcgi(){
     . /var/hostvn/menu/controller/cache/nginx_cache
 }
 
+cache_manage_varnish(){
+    . /var/hostvn/menu/controller/cache/manage_varnish
+}
+
+cache_install_varnish(){
+    . /var/hostvn/menu/controller/cache/install_varnish
+}
+
+cache_update_varnish_config(){
+    . /var/hostvn/menu/controller/cache/update_varnish_config
+}
+
+cache_purge_varnish(){
+    . /var/hostvn/menu/controller/cache/purge_varnish
+}
+
 opcache_enable_disable(){
     . /var/hostvn/menu/controller/cache/opcache/enable_disable
 }

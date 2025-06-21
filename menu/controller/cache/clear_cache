@@ -22,6 +22,9 @@ _clear_cache() {
     if service_running 'memcached'; then
         systemctl restart memcached
     fi
+    if service_running 'varnish'; then
+        varnishadm "ban req.url ~ ."
+    fi
 
     if [[ "$(ls -A "${USER_DIR}")" ]]; then
         _cd_dir "${USER_DIR}"

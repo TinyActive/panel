@@ -45,8 +45,7 @@ _purge_varnish_cache() {
     
     printf "${GREEN}%s\n${NC}" "Dang xoa cache Varnish. Vui long doi..."
     sleep 1
-    
-    if service_running "varnish"; then
+      if service_running "varnish"; then
         # Make sure varnishadm is available
         local VARNISHADM_PATH="varnishadm"
         if [ -f "/usr/local/bin/varnishadm" ]; then
@@ -55,13 +54,37 @@ _purge_varnish_cache() {
             VARNISHADM_PATH="/usr/bin/varnishadm"
         fi
         
+        # Get admin port
+        local ADMIN_PORT=6082
+        if grep -q "VARNISH_ADMIN_PORT=" /var/hostvn/menu/controller/cache/install_varnish; then
+            ADMIN_PORT=$(grep "VARNISH_ADMIN_PORT=" /var/hostvn/menu/controller/cache/install_varnish | head -1 | cut -d= -f2 | tr -d '"')
+        fi
+        
         # Purge based on domain
         if [[ "${purge_domain}" == "ALL" ]]; then
-            ${VARNISHADM_PATH} "ban req.url ~ ."
+            # Try multiple purge methods for compatibility
+            ${VARNISHADM_PATH} -T localhost:${ADMIN_PORT} "ban req.url ~ ." || \
+            ${VARNISHADM_PATH} -T localhost:${ADMIN_PORT} "ban.url ." || \
+            ${VARNISHADM_PATH} "ban req.url ~ ." || \
+            ${VARNISHADM_PATH} "ban.url ."
+            
+            # Also try restarting varnish as a last resort
+            systemctl restart varnish 2>/dev/null
+            
             printf "${GREEN}%s\n${NC}" "Xoa toan bo cache Varnish thanh cong."
         else
-            ${VARNISHADM_PATH} "ban req.http.host == ${purge_domain}"
-            ${VARNISHADM_PATH} "ban req.http.host == www.${purge_domain}"
+            # Try multiple purge methods for compatibility
+            ${VARNISHADM_PATH} -T localhost:${ADMIN_PORT} "ban req.http.host == ${purge_domain}" || \
+            ${VARNISHADM_PATH} -T localhost:${ADMIN_PORT} "ban.url .* && req.http.host == ${purge_domain}" || \
+            ${VARNISHADM_PATH} "ban req.http.host == ${purge_domain}" || \
+            ${VARNISHADM_PATH} "ban.url .* && req.http.host == ${purge_domain}"
+            
+            # Also purge www subdomain
+            ${VARNISHADM_PATH} -T localhost:${ADMIN_PORT} "ban req.http.host == www.${purge_domain}" || \
+            ${VARNISHADM_PATH} -T localhost:${ADMIN_PORT} "ban.url .* && req.http.host == www.${purge_domain}" || \
+            ${VARNISHADM_PATH} "ban req.http.host == www.${purge_domain}" || \
+            ${VARNISHADM_PATH} "ban.url .* && req.http.host == www.${purge_domain}"
+            
             printf "${GREEN}%s\n${NC}" "Xoa cache Varnish cho domain ${purge_domain} thanh cong."
         fi
     else

@@ -53,10 +53,28 @@ _update_varnish_config() {
     # Update VCL file with new TTL
     sed -i "s|set beresp.ttl = .*h;|set beresp.ttl = ${varnish_ttl}h;|g" /etc/varnish/default.vcl
     
-    # Update systemd service file with new memory allocation
+    # Update systemd service file with new memory allocation and port if needed
     VARNISH_SERVICE_FILE=$(find /lib/systemd/system /etc/systemd/system -type f -name "varnish.service" | head -n1)
     if [ -n "$VARNISH_SERVICE_FILE" ]; then
+        # Update memory allocation
         sed -i "s|-s malloc,[0-9]\+m|-s malloc,${varnish_memory}m|g" "$VARNISH_SERVICE_FILE"
+        
+        # Get current backend port
+        BACKEND_PORT=8080
+        
+        # Update the configuration to use correct ports
+        if grep -q "BACKEND_PORT=" /var/hostvn/menu/controller/cache/install_varnish; then
+            BACKEND_PORT=$(grep "BACKEND_PORT=" /var/hostvn/menu/controller/cache/install_varnish | head -1 | cut -d= -f2 | tr -d '"')
+        fi
+        
+        # Update backend port in all domain-specific Varnish configs
+        if [ -d "${NGINX_CONF_DIR}/varnish" ]; then
+            for conf_file in "${NGINX_CONF_DIR}"/varnish/*.conf; do
+                if [ -f "$conf_file" ]; then
+                    sed -i "s|\.port = \"[0-9]\+\";|\.port = \"${BACKEND_PORT}\";|g" "$conf_file"
+                fi
+            done
+        fi
     else
         printf "${RED}%s${NC}\n" "Khong tim thay file cau hinh varnish.service"
         return 1

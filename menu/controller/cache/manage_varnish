@@ -96,6 +96,16 @@ _enable_varnish_for_domain() {
     # Check if domain is using SSL
     local using_ssl=$(grep -w "ssl" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
     
+    # Extract server_name and root from the domain's Nginx config
+    local SERVER_NAMES=$(grep -E '^\s*server_name' "${VHOST_DIR}/${domain}.conf" | head -1 | sed 's/server_name\s*//g' | sed 's/;//g')
+    local ROOT_DIR=$(grep -E '^\s*root' "${VHOST_DIR}/${domain}.conf" | head -1 | sed 's/root\s*//g' | sed 's/;//g')
+    
+    # Extract PHP-FPM socket if available
+    local PHP_FPM_SOCK=$(grep -E 'fastcgi_pass\s+unix:' "${VHOST_DIR}/${domain}.conf" | head -1 | sed -E 's/.*fastcgi_pass\s+unix:([^;]+);.*/\1/g')
+    if [ -z "$PHP_FPM_SOCK" ]; then
+        PHP_FPM_SOCK="/var/run/php/php7.4-fpm.sock"
+    fi
+    
     # Create domain-specific config for Varnish
     if [ ! -f "${NGINX_CONF_DIR}/varnish/${domain}.conf" ]; then
         cat > "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
@@ -110,10 +120,50 @@ backend ${domain//./_} {
 END
     fi
     
-    # Update Nginx vhost to listen on 8080 instead of 80
-    sed -i 's/listen 80;/listen 8080;/g' "${VHOST_DIR}/${domain}.conf"
+    # Create a backup of the original config if it doesn't exist
+    if [ ! -f "${VHOST_DIR}/${domain}.conf.novarnish" ]; then
+        cp "${VHOST_DIR}/${domain}.conf" "${VHOST_DIR}/${domain}.conf.novarnish"
+    fi
     
-    # Mark domain as using Varnish
+    # Create new Nginx configuration with both backend and frontend servers
+    cat > "${VHOST_DIR}/${domain}.conf" << END
+# Backend server (Delivers content to Varnish)
+server {
+    listen 8080;
+    server_name ${SERVER_NAMES};
+    
+    root ${ROOT_DIR};
+    index index.php index.html;
+    
+    # PHP handling
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:${PHP_FPM_SOCK};
+    }
+    
+    # Include all other settings from original config
+    include ${VHOST_DIR}/${domain}.conf.novarnish.include;
+}
+
+# Front-end server (Proxies to Varnish)
+server {
+    listen 80;
+    server_name ${SERVER_NAMES};
+    
+    location / {
+        proxy_pass http://127.0.0.1:6081;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering on;
+    }
+}
+END
+    
+    # Extract and save all other settings from original config
+    grep -v -E '^\s*server_name|^\s*root|^\s*listen|^\s*index|^\s*location \/ {|^\s*location ~ \\\.php\$' "${VHOST_DIR}/${domain}.conf.novarnish" > "${VHOST_DIR}/${domain}.conf.novarnish.include"
+      # Mark domain as using Varnish
     grep -q "use_varnish" "${USER_DIR}/.${domain}.conf" && \
         sed -i '/use_varnish/d' "${USER_DIR}/.${domain}.conf"
     echo "use_varnish=yes" >> "${USER_DIR}/.${domain}.conf"
@@ -126,7 +176,15 @@ END
     
     # Check if domain is WordPress and configure special rules if needed
     if [ -d "/home/${user}/${domain}/public_html/wp-content" ]; then
-        cat >> "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+        cat > "${NGINX_CONF_DIR}/varnish/${domain}.conf" << END
+# Varnish backend configuration for ${domain}
+backend ${domain//./_} {
+    .host = "127.0.0.1";
+    .port = "8080";
+    .connect_timeout = 300s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 300s;
+}
 
 # WordPress specific configuration for ${domain}
 sub vcl_recv_${domain//./_} {
@@ -139,6 +197,27 @@ sub vcl_recv_${domain//./_} {
         # Skip cache for WooCommerce if present
         if (req.url ~ "/store.*|/cart.*|/my-account.*|/checkout.*|/addons.*") {
             return (pass);
+        }
+        
+        # Add special handling for WordPress cookies
+        if (req.http.Cookie) {
+            # Remove the WordPress cookies except for logged-in users
+            if (req.http.Cookie !~ "wordpress_logged_in_") {
+                set req.http.Cookie = regsuball(req.http.Cookie, "wp-settings-\\d+=[^;]+(; )?", "");
+                set req.http.Cookie = regsuball(req.http.Cookie, "wp-settings-time-\\d+=[^;]+(; )?", "");
+                set req.http.Cookie = regsuball(req.http.Cookie, "wordpress_test_cookie=[^;]+(; )?", "");
+                
+                if (req.http.Cookie == "") {
+                    unset req.http.Cookie;
+                }
+            }
+        }
+        
+        # Cache different versions for mobile and desktop
+        if (req.http.User-Agent ~ "(?i)mobile|android|iphone|ipad|tablet") {
+            set req.http.X-Device = "mobile";
+        } else {
+            set req.http.X-Device = "desktop";
         }
     }
 }
@@ -154,8 +233,35 @@ END
 _disable_varnish_for_domain() {
     local domain=$1
     
-    # Update Nginx vhost to listen on 80 instead of 8080
-    sed -i 's/listen 8080;/listen 80;/g' "${VHOST_DIR}/${domain}.conf"
+    # Restore the original config if backup exists
+    if [ -f "${VHOST_DIR}/${domain}.conf.novarnish" ]; then
+        cp "${VHOST_DIR}/${domain}.conf.novarnish" "${VHOST_DIR}/${domain}.conf"
+        # Clean up the include file
+        rm -f "${VHOST_DIR}/${domain}.conf.novarnish.include" 2>/dev/null
+    else
+        # If no backup exists, try to recreate a basic config
+        local SERVER_NAMES=$(grep -E 'server_name' "${VHOST_DIR}/${domain}.conf" | head -1 | sed 's/server_name\s*//g' | sed 's/;//g')
+        local ROOT_DIR=$(grep -E 'root' "${VHOST_DIR}/${domain}.conf" | grep -v "#" | head -1 | sed 's/root\s*//g' | sed 's/;//g')
+        
+        cat > "${VHOST_DIR}/${domain}.conf" << END
+server {
+    listen 80;
+    server_name ${SERVER_NAMES};
+    
+    root ${ROOT_DIR};
+    index index.php index.html;
+    
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+    
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
+    }
+}
+END
+    fi
     
     # Remove domain from Varnish config
     if grep -q "include \"${NGINX_CONF_DIR}/varnish/${domain}.conf\";" "/etc/varnish/default.vcl"; then

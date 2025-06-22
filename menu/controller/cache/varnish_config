@@ -1,0 +1,418 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_config_action(){
+    clear
+    printf "%s\n" "Lua chon cau hinh nang cao"
+    PS3="Nhap vao lua chon cua ban [ 1 - 6 ]: "
+    options=("Chinh sua VCL" "Cau hinh bo nho" "Cau hinh timeout" "Backup/Restore config" "Reset ve mac dinh" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Chinh sua VCL")
+            action="edit_vcl"
+            break
+            ;;
+        "Cau hinh bo nho")
+            action="memory"
+            break
+            ;;
+        "Cau hinh timeout")
+            action="timeout"
+            break
+            ;;
+        "Backup/Restore config")
+            action="backup"
+            break
+            ;;
+        "Reset ve mac dinh")
+            action="reset"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long chon lai. $REPLY" ;;
+        esac
+    done
+    sleep 1
+}
+
+_edit_vcl() {
+    printf "%s\n" "${GREEN}=== CHINH SUA VCL CONFIGURATION ===${NC}"
+    printf "%s\n" ""
+    printf "%s\n" "VCL (Varnish Configuration Language) file hien tai:"
+    printf "%s\n" "/etc/varnish/default.vcl"
+    printf "%s\n" ""
+    
+    if [[ ! -f "/etc/varnish/default.vcl" ]]; then
+        printf "%s\n" "${RED}File VCL khong ton tai!${NC}"
+        return 1
+    fi
+    
+    # Show current VCL summary
+    printf "%s\n" "${GREEN}Thong tin VCL hien tai:${NC}"
+    printf "%s\n" "File: /etc/varnish/default.vcl"
+    printf "%s\n" "Size: $(stat -f%z /etc/varnish/default.vcl 2>/dev/null || stat -c%s /etc/varnish/default.vcl) bytes"
+    printf "%s\n" "Modified: $(stat -f%Sm /etc/varnish/default.vcl 2>/dev/null || stat -c%y /etc/varnish/default.vcl)"
+    printf "%s\n" ""
+    
+    PS3="Lua chon thao tac: "
+    options=("Xem noi dung VCL" "Backup VCL" "Chinh sua VCL" "Test VCL" "Quay lai")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Xem noi dung VCL")
+            clear
+            printf "%s\n" "${GREEN}=== NOI DUNG VCL ===${NC}"
+            cat /etc/varnish/default.vcl
+            printf "%s\n" ""
+            printf "%s\n" "${GREEN}=== KET THUC NOI DUNG VCL ===${NC}"
+            read -r -p "Nhan Enter de tiep tuc..."
+            ;;
+        "Backup VCL")
+            backup_file="/etc/varnish/default.vcl.backup.$(date +%Y%m%d_%H%M%S)"
+            cp /etc/varnish/default.vcl "${backup_file}"
+            printf "%s\n" "${GREEN}Da backup VCL thanh cong: ${backup_file}${NC}"
+            ;;
+        "Chinh sua VCL")
+            # Backup before editing
+            backup_file="/etc/varnish/default.vcl.backup.$(date +%Y%m%d_%H%M%S)"
+            cp /etc/varnish/default.vcl "${backup_file}"
+            printf "%s\n" "${YELLOW}Da backup VCL: ${backup_file}${NC}"
+            
+            # Edit with nano or vim
+            if command -v nano >/dev/null 2>&1; then
+                printf "%s\n" "Mo trinh chinh sua (nano)..."
+                nano /etc/varnish/default.vcl
+            elif command -v vim >/dev/null 2>&1; then
+                printf "%s\n" "Mo trinh chinh sua (vim)..."
+                vim /etc/varnish/default.vcl
+            else
+                printf "%s\n" "${RED}Khong tim thay trinh chinh sua text.${NC}"
+            fi
+            ;;
+        "Test VCL")
+            printf "%s\n" "${GREEN}Dang kiem tra VCL...${NC}"
+            if varnishd -C -f /etc/varnish/default.vcl >/dev/null 2>&1; then
+                printf "%s\n" "${GREEN}VCL hop le!${NC}"
+                read -r -p "Ban co muon reload Varnish voi VCL moi khong (y/n)? " reload_confirm
+                if [[ "${reload_confirm}" =~ ^([yY])$ ]]; then
+                    systemctl reload varnish
+                    printf "%s\n" "${GREEN}Da reload Varnish.${NC}"
+                fi
+            else
+                printf "%s\n" "${RED}VCL khong hop le!${NC}"
+                varnishd -C -f /etc/varnish/default.vcl
+            fi
+            ;;
+        "Quay lai")
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon khong hop le." ;;
+        esac
+    done
+}
+
+_config_memory() {
+    printf "%s\n" "${GREEN}=== CAU HINH BO NHO VARNISH ===${NC}"
+    printf "%s\n" ""
+    
+    # Get current memory configuration
+    current_memory=$(systemctl show varnish --property=ExecStart --value 2>/dev/null | grep -o 'malloc,[0-9]*M' | cut -d',' -f2 | cut -d'M' -f1)
+    if [[ -z "${current_memory}" ]]; then
+        current_memory="512"
+    fi
+    
+    total_ram=$(free -m | awk '/^Mem:/{print $2}')
+    recommended_memory=$((total_ram / 4))
+    
+    printf "%s\n" "RAM tong: ${total_ram} MB"
+    printf "%s\n" "RAM hien tai cho Varnish: ${current_memory} MB"
+    printf "%s\n" "RAM de xuat cho Varnish: ${recommended_memory} MB (25% tong RAM)"
+    printf "%s\n" ""
+    
+    read -r -p "Nhap kich thuoc RAM moi cho Varnish (MB) [${recommended_memory}]: " new_memory
+    if [[ -z "${new_memory}" ]]; then
+        new_memory="${recommended_memory}"
+    fi
+    
+    # Validate input
+    if ! [[ "${new_memory}" =~ ^[0-9]+$ ]] || [[ "${new_memory}" -lt 64 ]]; then
+        printf "%s\n" "${RED}Kich thuoc RAM khong hop le (toi thieu 64MB).${NC}"
+        return 1
+    fi
+    
+    if [[ "${new_memory}" -gt $((total_ram * 3 / 4)) ]]; then
+        printf "%s\n" "${YELLOW}Canh bao: Ban dang cap phat qua nhieu RAM cho Varnish (>${75}% tong RAM).${NC}"
+        read -r -p "Ban co muon tiep tuc khong (y/n)? " confirm_memory
+        if [[ ! "${confirm_memory}" =~ ^([yY])$ ]]; then
+            printf "%s\n" "${RED}Huy thay doi cau hinh RAM.${NC}"
+            return 1
+        fi
+    fi
+    
+    # Update systemd service file
+    sed -i "s/malloc,[0-9]*M/malloc,${new_memory}M/g" /etc/systemd/system/varnish.service
+    systemctl daemon-reload
+    
+    printf "%s\n" "${GREEN}Da cap nhat cau hinh RAM: ${new_memory} MB${NC}"
+    
+    read -r -p "Ban co muon khoi dong lai Varnish de ap dung thay doi khong (y/n)? " restart_confirm
+    if [[ "${restart_confirm}" =~ ^([yY])$ ]]; then
+        systemctl restart varnish
+        sleep 2
+        if systemctl is-active varnish >/dev/null 2>&1; then
+            printf "%s\n" "${GREEN}Khoi dong lai Varnish thanh cong.${NC}"
+        else
+            printf "%s\n" "${RED}Khoi dong lai Varnish that bai!${NC}"
+        fi
+    fi
+}
+
+_config_timeout() {
+    printf "%s\n" "${GREEN}=== CAU HINH TIMEOUT ===${NC}"
+    printf "%s\n" ""
+    
+    # Show current timeout settings from VCL
+    printf "%s\n" "Cac timeout hien tai trong VCL:"
+    grep -E "(connect_timeout|first_byte_timeout|between_bytes_timeout)" /etc/varnish/default.vcl 2>/dev/null || printf "Khong tim thay cau hinh timeout\n"
+    printf "%s\n" ""
+    
+    PS3="Chon timeout can thay doi: "
+    options=("Connect timeout" "First byte timeout" "Between bytes timeout" "Tat ca timeout" "Quay lai")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Connect timeout")
+            read -r -p "Nhap connect timeout (giay) [60]: " connect_timeout
+            connect_timeout=${connect_timeout:-60}
+            sed -i "s/\.connect_timeout = [0-9]*s;/.connect_timeout = ${connect_timeout}s;/g" /etc/varnish/default.vcl
+            printf "%s\n" "${GREEN}Da cap nhat connect timeout: ${connect_timeout}s${NC}"
+            ;;
+        "First byte timeout")
+            read -r -p "Nhap first byte timeout (giay) [60]: " first_byte_timeout
+            first_byte_timeout=${first_byte_timeout:-60}
+            sed -i "s/\.first_byte_timeout = [0-9]*s;/.first_byte_timeout = ${first_byte_timeout}s;/g" /etc/varnish/default.vcl
+            printf "%s\n" "${GREEN}Da cap nhat first byte timeout: ${first_byte_timeout}s${NC}"
+            ;;
+        "Between bytes timeout")
+            read -r -p "Nhap between bytes timeout (giay) [60]: " between_bytes_timeout
+            between_bytes_timeout=${between_bytes_timeout:-60}
+            sed -i "s/\.between_bytes_timeout = [0-9]*s;/.between_bytes_timeout = ${between_bytes_timeout}s;/g" /etc/varnish/default.vcl
+            printf "%s\n" "${GREEN}Da cap nhat between bytes timeout: ${between_bytes_timeout}s${NC}"
+            ;;
+        "Tat ca timeout")
+            read -r -p "Nhap connect timeout (giay) [60]: " connect_timeout
+            read -r -p "Nhap first byte timeout (giay) [60]: " first_byte_timeout
+            read -r -p "Nhap between bytes timeout (giay) [60]: " between_bytes_timeout
+            
+            connect_timeout=${connect_timeout:-60}
+            first_byte_timeout=${first_byte_timeout:-60}
+            between_bytes_timeout=${between_bytes_timeout:-60}
+            
+            sed -i "s/\.connect_timeout = [0-9]*s;/.connect_timeout = ${connect_timeout}s;/g" /etc/varnish/default.vcl
+            sed -i "s/\.first_byte_timeout = [0-9]*s;/.first_byte_timeout = ${first_byte_timeout}s;/g" /etc/varnish/default.vcl
+            sed -i "s/\.between_bytes_timeout = [0-9]*s;/.between_bytes_timeout = ${between_bytes_timeout}s;/g" /etc/varnish/default.vcl
+            
+            printf "%s\n" "${GREEN}Da cap nhat tat ca timeout.${NC}"
+            ;;
+        "Quay lai")
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon khong hop le." ;;
+        esac
+        
+        if [[ "${opt}" != "Quay lai" ]]; then
+            read -r -p "Ban co muon reload Varnish de ap dung thay doi khong (y/n)? " reload_confirm
+            if [[ "${reload_confirm}" =~ ^([yY])$ ]]; then
+                if varnishd -C -f /etc/varnish/default.vcl >/dev/null 2>&1; then
+                    systemctl reload varnish
+                    printf "%s\n" "${GREEN}Da reload Varnish.${NC}"
+                else
+                    printf "%s\n" "${RED}VCL khong hop le! Khong the reload.${NC}"
+                fi
+            fi
+        fi
+    done
+}
+
+_backup_restore_config() {
+    printf "%s\n" "${GREEN}=== BACKUP/RESTORE CONFIG ===${NC}"
+    printf "%s\n" ""
+    
+    PS3="Chon thao tac: "
+    options=("Backup config" "Restore config" "Liet ke backup" "Xoa backup" "Quay lai")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Backup config")
+            backup_dir="/var/backups/varnish"
+            mkdir -p "${backup_dir}"
+            backup_name="varnish_config_$(date +%Y%m%d_%H%M%S)"
+            
+            tar -czf "${backup_dir}/${backup_name}.tar.gz" \
+                /etc/varnish/ \
+                /etc/systemd/system/varnish.service \
+                "${DEFAULT_DIR_TOOL}/varnish/" \
+                /etc/nginx/apps/varnish.conf 2>/dev/null
+            
+            printf "%s\n" "${GREEN}Da backup config: ${backup_dir}/${backup_name}.tar.gz${NC}"
+            ;;
+        "Restore config")
+            backup_dir="/var/backups/varnish"
+            if [[ ! -d "${backup_dir}" ]] || [[ -z "$(ls -A "${backup_dir}")" ]]; then
+                printf "%s\n" "${RED}Khong co backup nao.${NC}"
+                continue
+            fi
+            
+            printf "%s\n" "Danh sach backup:"
+            ls -la "${backup_dir}"/*.tar.gz 2>/dev/null | awk '{print NR ". " $9}' > /tmp/backup_list
+            cat /tmp/backup_list
+            
+            read -r -p "Nhap so thu tu backup can restore: " backup_choice
+            backup_file=$(awk "NR==${backup_choice} {print \$2}" /tmp/backup_list)
+            
+            if [[ -f "${backup_file}" ]]; then
+                printf "%s\n" "${YELLOW}Canh bao: Thao tac nay se ghi de cau hinh hien tai!${NC}"
+                read -r -p "Ban co chac chan muon restore backup nay khong (y/n)? " restore_confirm
+                if [[ "${restore_confirm}" =~ ^([yY])$ ]]; then
+                    tar -xzf "${backup_file}" -C / 2>/dev/null
+                    systemctl daemon-reload
+                    printf "%s\n" "${GREEN}Da restore backup thanh cong.${NC}"
+                    printf "%s\n" "${YELLOW}Vui long restart Varnish de ap dung cau hinh.${NC}"
+                fi
+            else
+                printf "%s\n" "${RED}Backup khong ton tai.${NC}"
+            fi
+            rm -f /tmp/backup_list
+            ;;
+        "Liet ke backup")
+            backup_dir="/var/backups/varnish"
+            if [[ -d "${backup_dir}" ]]; then
+                printf "%s\n" "Danh sach backup:"
+                ls -lah "${backup_dir}"/*.tar.gz 2>/dev/null || printf "Khong co backup nao.\n"
+            else
+                printf "%s\n" "Khong co backup nao."
+            fi
+            ;;
+        "Xoa backup")
+            backup_dir="/var/backups/varnish"
+            if [[ -d "${backup_dir}" ]]; then
+                read -r -p "Ban co muon xoa tat ca backup khong (y/n)? " delete_confirm
+                if [[ "${delete_confirm}" =~ ^([yY])$ ]]; then
+                    rm -rf "${backup_dir}"
+                    printf "%s\n" "${GREEN}Da xoa tat ca backup.${NC}"
+                fi
+            else
+                printf "%s\n" "Khong co backup nao de xoa."
+            fi
+            ;;
+        "Quay lai")
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon khong hop le." ;;
+        esac
+    done
+}
+
+_reset_to_default() {
+    printf "%s\n" "${RED}=== RESET VE CAU HINH MAC DINH ===${NC}"
+    printf "%s\n" ""
+    printf "%s\n" "${RED}CANH BAO: Thao tac nay se reset tat ca cau hinh Varnish ve mac dinh!${NC}"
+    printf "%s\n" "- VCL se duoc tao lai"
+    printf "%s\n" "- Systemd service se duoc reset"
+    printf "%s\n" "- Cau hinh memory se duoc reset ve 512MB"
+    printf "%s\n" ""
+    
+    read -r -p "Ban co CHAC CHAN muon reset khong (y/n)? " reset_confirm
+    if [[ ! "${reset_confirm}" =~ ^([yY])$ ]]; then
+        printf "%s\n" "${GREEN}Huy thao tac reset.${NC}"
+        return 0
+    fi
+    
+    # Backup current config
+    backup_dir="/var/backups/varnish"
+    mkdir -p "${backup_dir}"
+    backup_name="pre_reset_$(date +%Y%m%d_%H%M%S)"
+    tar -czf "${backup_dir}/${backup_name}.tar.gz" /etc/varnish/ /etc/systemd/system/varnish.service 2>/dev/null
+    printf "%s\n" "${GREEN}Da backup cau hinh hien tai: ${backup_dir}/${backup_name}.tar.gz${NC}"
+    
+    # Stop Varnish
+    systemctl stop varnish
+    
+    # Recreate default VCL and service files
+    _set_var() {
+        MAX_MEMORY=512
+    }
+    _set_var
+    
+    # Call functions from install script to recreate configs
+    . /var/hostvn/menu/controller/cache/install_varnish
+    _create_varnish_config
+    
+    printf "%s\n" "${GREEN}Da reset cau hinh ve mac dinh.${NC}"
+    
+    read -r -p "Ban co muon bat lai Varnish khong (y/n)? " start_confirm
+    if [[ "${start_confirm}" =~ ^([yY])$ ]]; then
+        systemctl start varnish
+        sleep 2
+        if systemctl is-active varnish >/dev/null 2>&1; then
+            printf "%s\n" "${GREEN}Da bat lai Varnish thanh cong.${NC}"
+        else
+            printf "%s\n" "${RED}Bat lai Varnish that bai!${NC}"
+        fi
+    fi
+}
+
+_run() {
+    case "${action}" in
+        "edit_vcl")
+            _edit_vcl
+            ;;
+        "memory")
+            _config_memory
+            ;;
+        "timeout")
+            _config_timeout
+            ;;
+        "backup")
+            _backup_restore_config
+            ;;
+        "reset")
+            _reset_to_default
+            ;;
+    esac
+}
+
+# Check if Varnish is installed
+if [[ ! -f "/etc/varnish/default.vcl" ]]; then
+    printf "%s\n" "${RED}Varnish Cache chua duoc cai dat.${NC}"
+    menu_cache
+    exit 1
+fi
+
+action=""
+
+_config_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "${RED}%s${NC}\n" "Huy thao tac."
+else
+    clear
+    _run
+fi
+
+printf "%s\n" ""
+read -r -p "Nhan Enter de tiep tuc..."
+menu_cache

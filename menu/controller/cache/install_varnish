@@ -1,0 +1,518 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_confirm(){
+    clear
+    printf "%s==================================%s\n" "${GREEN}" "${NC}"
+    printf "     %sCAI DAT VARNISH CACHE%s      \n" "${GREEN}" "${NC}"
+    printf "%s==================================%s\n" "${GREEN}" "${NC}"
+    printf "%s\n" "Varnish Cache se giup tang toc do website cua ban."
+    printf "%s\n" "Varnish hoat dong nhu mot reverse proxy cache."
+    printf "%s\n" "Cau hinh: Nginx SSL (443) -> Varnish (80) -> Nginx Backend (8080)"
+    printf "%s\n" "${RED}Luu y: Varnish chi nen su dung voi cac website co luu luong cao.${NC}"
+    
+    while true; do
+        read -r -p "Ban co muon cai dat Varnish Cache khong (y/n)? " prompt_varnish
+        echo
+        if [[ "${prompt_varnish}" =~ ^([yY])$ || "${prompt_varnish}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_set_var(){
+    NGINX_PROCESSES=$(grep -c ^processor /proc/cpuinfo)
+    MAX_MEMORY=$((NGINX_PROCESSES * 256))
+    if [ ${MAX_MEMORY} -lt 512 ]; then
+        MAX_MEMORY=512
+    fi
+}
+
+_backup_nginx_config(){
+    # Backup current nginx config
+    if [ -f "/etc/nginx/nginx.conf" ]; then
+        cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.pre-varnish
+    fi
+    
+    # Backup vhost configs
+    if [ -d "${VHOST_DIR}" ]; then
+        mkdir -p "${BACKUP_VHOST_DIR}/pre-varnish"
+        cp -r "${VHOST_DIR}"/* "${BACKUP_VHOST_DIR}/pre-varnish/" 2>/dev/null || true
+    fi
+}
+
+_install_varnish(){
+    printf "%s\n" "${GREEN}Dang cai dat Varnish Cache...${NC}"
+    
+    # Update package list
+    sudo apt-get update -y
+    
+    # Install Varnish
+    sudo apt-get install varnish -y
+    
+    # Stop varnish service initially
+    systemctl stop varnish
+    systemctl disable varnish
+    
+    # Create varnish directory
+    mkdir -p /etc/varnish/vcl.d
+    mkdir -p /var/lib/varnish/storage
+    
+    # Set permissions
+    chown -R varnish:varnish /var/lib/varnish
+    chown -R varnish:varnish /etc/varnish
+}
+
+_create_varnish_config(){
+    # Main VCL configuration
+    cat > "/etc/varnish/default.vcl" << 'EOvarnish_vcl'
+vcl 4.1;
+
+import directors;
+import std;
+
+# Backend definition - Nginx on port 8080
+backend default {
+    .host = "127.0.0.1";
+    .port = "8080";
+    .connect_timeout = 60s;
+    .first_byte_timeout = 60s;
+    .between_bytes_timeout = 60s;
+    .max_connections = 300;
+    .probe = {
+        .url = "/nginx_status";
+        .timeout = 5s;
+        .interval = 30s;
+        .window = 5;
+        .threshold = 3;
+    }
+}
+
+# Access control list for cache purging
+acl purge {
+    "localhost";
+    "127.0.0.1";
+    "::1";
+}
+
+sub vcl_recv {
+    # Remove port from host header
+    set req.http.Host = regsub(req.http.Host, ":[0-9]+", "");
+
+    # Allow purging
+    if (req.method == "PURGE") {
+        if (!client.ip ~ purge) {
+            return (synth(405, "Not allowed."));
+        }
+        return (purge);
+    }
+
+    # Only cache GET and HEAD requests
+    if (req.method != "GET" && req.method != "HEAD") {
+        return (pass);
+    }
+
+    # Don't cache if user is logged in
+    if (req.http.Cookie ~ "wordpress_logged_in|wp-postpass") {
+        return (pass);
+    }
+
+    # Don't cache admin pages
+    if (req.url ~ "^/wp-admin" || req.url ~ "^/wp-login") {
+        return (pass);
+    }
+
+    # Don't cache AJAX requests
+    if (req.http.X-Requested-With == "XMLHttpRequest") {
+        return (pass);
+    }
+
+    # Strip query parameters from static files
+    if (req.url ~ "\.(css|js|png|gif|jp(e)?g|swf|ico|pdf|txt|csv|doc)(\?.*)?$") {
+        unset req.url;
+        set req.url = regsub(req.url, "\?.*$", "");
+    }
+
+    # Remove tracking parameters
+    set req.url = regsuball(req.url, "\?(gclid|cx|ie|cof|siteurl)=([^&]+)", "");
+    set req.url = regsuball(req.url, "&(gclid|cx|ie|cof|siteurl)=([^&]+)", "");
+    set req.url = regsuball(req.url, "\?&", "?");
+    set req.url = regsuball(req.url, "\?$", "");
+
+    # Normalize Accept-Encoding header
+    if (req.http.Accept-Encoding) {
+        if (req.url ~ "\.(jpg|jpeg|png|gif|gz|tgz|bz2|tbz|mp3|ogg|swf|flv)$") {
+            unset req.http.Accept-Encoding;
+        } elsif (req.http.Accept-Encoding ~ "gzip") {
+            set req.http.Accept-Encoding = "gzip";
+        } else {
+            unset req.http.Accept-Encoding;
+        }
+    }
+
+    return (hash);
+}
+
+sub vcl_hash {
+    hash_data(req.url);
+    hash_data(req.http.Host);
+    
+    # Include scheme in hash for HTTPS
+    if (req.http.X-Forwarded-Proto) {
+        hash_data(req.http.X-Forwarded-Proto);
+    }
+    
+    return (lookup);
+}
+
+sub vcl_hit {
+    if (req.method == "PURGE") {
+        return (synth(204, "Purged"));
+    }
+    return (deliver);
+}
+
+sub vcl_miss {
+    if (req.method == "PURGE") {
+        return (synth(404, "Not in cache"));
+    }
+    return (fetch);
+}
+
+sub vcl_backend_response {
+    # Don't cache if backend returns error
+    if (beresp.status >= 500) {
+        set beresp.uncacheable = true;
+        return (deliver);
+    }
+
+    # Cache static files for longer
+    if (bereq.url ~ "\.(css|js|png|gif|jp(e)?g|swf|ico|pdf|txt|csv|doc)(\?.*)?$") {
+        set beresp.ttl = 1w;
+        set beresp.http.Cache-Control = "public, max-age=604800";
+    }
+
+    # Cache HTML for shorter time
+    if (beresp.http.Content-Type ~ "text/html") {
+        set beresp.ttl = 1h;
+        set beresp.http.Cache-Control = "public, max-age=3600";
+    }
+
+    # Don't cache if Set-Cookie header is present
+    if (beresp.http.Set-Cookie) {
+        set beresp.uncacheable = true;
+        return (deliver);
+    }
+
+    # Remove unnecessary headers
+    unset beresp.http.Server;
+    unset beresp.http.X-Powered-By;
+
+    return (deliver);
+}
+
+sub vcl_deliver {
+    # Add cache status header
+    if (obj.hits > 0) {
+        set resp.http.X-Cache = "HIT";
+        set resp.http.X-Cache-Hits = obj.hits;
+    } else {
+        set resp.http.X-Cache = "MISS";
+    }
+
+    # Remove backend information
+    unset resp.http.Via;
+    unset resp.http.X-Varnish;
+    
+    return (deliver);
+}
+
+sub vcl_purge {
+    return (synth(204, "Purged"));
+}
+EOvarnish_vcl
+
+    # Create systemd service file
+    cat > "/etc/systemd/system/varnish.service" << EOvarnish_service
+[Unit]
+Description=Varnish HTTP accelerator
+Documentation=https://www.varnish-cache.org/docs/
+After=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+User=varnish
+Group=varnish
+ExecStart=/usr/sbin/varnishd -F -a :80 -T 127.0.0.1:6082 -f /etc/varnish/default.vcl -S /etc/varnish/secret -s malloc,${MAX_MEMORY}M
+ExecReload=/bin/kill -HUP \$MAINPID
+KillMode=mixed
+Restart=on-failure
+LimitNOFILE=131072
+LimitMEMLOCK=82000
+
+[Install]
+WantedBy=multi-user.target
+EOvarnish_service
+
+    # Generate secret key
+    if [ ! -f "/etc/varnish/secret" ]; then
+        openssl rand -base64 32 > /etc/varnish/secret
+        chown varnish:varnish /etc/varnish/secret
+        chmod 600 /etc/varnish/secret
+    fi
+
+    # Reload systemd
+    systemctl daemon-reload
+}
+
+_configure_nginx_backend(){
+    # Create nginx backend configuration on port 8080
+    cat > "/etc/nginx/sites-available/backend" << EOnginx_backend
+server {
+    listen 8080 default_server;
+    server_name _;
+    
+    # Nginx status for Varnish health check
+    location /nginx_status {
+        stub_status on;
+        access_log off;
+        allow 127.0.0.1;
+        deny all;
+    }
+    
+    # Default response for health check
+    location = /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+    
+    # Default 404 for backend
+    location / {
+        return 404;
+    }
+}
+EOnginx_backend
+
+    # Enable the backend site
+    if [ ! -f "/etc/nginx/sites-enabled/backend" ]; then
+        ln -s /etc/nginx/sites-available/backend /etc/nginx/sites-enabled/backend
+    fi
+}
+
+_install_varnish_admin(){
+    # Create varnish admin directory
+    mkdir -p "${DEFAULT_DIR_TOOL}/varnish"
+    
+    # Download Varnish admin interface
+    cat > "${DEFAULT_DIR_TOOL}/varnish/index.php" << 'EOvarnish_admin'
+<?php
+// Simple Varnish Admin Interface
+$varnish_secret = file_get_contents('/etc/varnish/secret');
+$varnish_host = '127.0.0.1';
+$varnish_port = 6082;
+
+function varnish_command($cmd) {
+    global $varnish_secret, $varnish_host, $varnish_port;
+    
+    $fp = fsockopen($varnish_host, $varnish_port, $errno, $errstr, 30);
+    if (!$fp) {
+        return "Connection failed: $errstr ($errno)";
+    }
+    
+    // Read challenge
+    $challenge = fgets($fp, 1024);
+    preg_match('/^(\d+)\s+(.+)$/', $challenge, $matches);
+    $auth_key = hash('sha256', $matches[1] . "\n" . trim($varnish_secret) . "\n" . $matches[1] . "\n");
+    
+    // Send authentication
+    fwrite($fp, "auth $auth_key\n");
+    $auth_response = fgets($fp, 1024);
+    
+    // Send command
+    fwrite($fp, "$cmd\n");
+    
+    $result = '';
+    while (!feof($fp)) {
+        $line = fgets($fp, 1024);
+        if (trim($line) == '200') break;
+        $result .= $line;
+    }
+    
+    fclose($fp);
+    return $result;
+}
+
+if (isset($_POST['action'])) {
+    switch ($_POST['action']) {
+        case 'ban_url':
+            $url = $_POST['url'];
+            $cmd = "ban req.url ~ \"^$url\"";
+            $result = varnish_command($cmd);
+            break;
+        case 'ban_host':
+            $host = $_POST['host'];
+            $cmd = "ban req.http.host == \"$host\"";
+            $result = varnish_command($cmd);
+            break;
+        case 'stats':
+            $result = varnish_command('stats');
+            break;
+        case 'status':
+            $result = varnish_command('status');
+            break;
+    }
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Varnish Cache Manager</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="url"] { width: 100%; padding: 8px; border: 1px solid #ddd; }
+        button { background: #007cba; color: white; padding: 10px 15px; border: none; cursor: pointer; }
+        button:hover { background: #005a87; }
+        .result { background: #f9f9f9; padding: 15px; border: 1px solid #ddd; margin-top: 15px; white-space: pre-wrap; }
+        .header { background: #23282d; color: white; padding: 20px; margin: -20px -20px 20px -20px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 Varnish Cache Manager</h1>
+        <p>Quản lý Varnish Cache cho website</p>
+    </div>
+    
+    <div class="container">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div>
+                <h3>🗑️ Purge Cache theo URL</h3>
+                <form method="post">
+                    <input type="hidden" name="action" value="ban_url">
+                    <div class="form-group">
+                        <label>URL hoặc pattern:</label>
+                        <input type="text" name="url" placeholder="/wp-content/uploads/.*\.jpg" required>
+                        <small>Ví dụ: /page-name hoặc /wp-content/uploads/.*\.jpg</small>
+                    </div>
+                    <button type="submit">Purge URL</button>
+                </form>
+            </div>
+            
+            <div>
+                <h3>🌐 Purge Cache theo Domain</h3>
+                <form method="post">
+                    <input type="hidden" name="action" value="ban_host">
+                    <div class="form-group">
+                        <label>Domain:</label>
+                        <input type="text" name="host" placeholder="example.com" required>
+                    </div>
+                    <button type="submit">Purge Domain</button>
+                </form>
+            </div>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h3>📊 Thống kê & Trạng thái</h3>
+            <form method="post" style="display: inline-block; margin-right: 10px;">
+                <input type="hidden" name="action" value="stats">
+                <button type="submit">Xem thống kê</button>
+            </form>
+            <form method="post" style="display: inline-block;">
+                <input type="hidden" name="action" value="status">
+                <button type="submit">Kiểm tra trạng thái</button>
+            </form>
+        </div>
+        
+        <?php if (isset($result)): ?>
+            <div class="result"><?php echo htmlspecialchars($result); ?></div>
+        <?php endif; ?>
+    </div>
+</body>
+</html>
+EOvarnish_admin
+
+    chown -R nginx:nginx "${DEFAULT_DIR_TOOL}/varnish"
+}
+
+_create_varnish_nginx_app(){
+    # Create nginx app configuration for varnish admin
+    cat > "/etc/nginx/apps/varnish.conf" << EOvarnish_app
+location ^~ /varnish {
+    root ${DEFAULT_DIR_TOOL}/;
+    index index.php index.html index.htm;
+
+    auth_basic "Restricted";
+    auth_basic_user_file ${USR_DIR}/nginx/auth/.htpasswd;
+
+    location ~ ^/varnish/(.+\.php)$ {
+        try_files \$uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        fastcgi_index index.php;
+        include /etc/nginx/fastcgi_params;
+        include /etc/nginx/extra/nginx_limits.conf;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        if (-f \$request_filename) { fastcgi_pass php-app; }
+    }
+    location ~* ^/varnish/(.+\.(jpg|jpeg|gif|css|png|js|ico|html|webp|xml|txt))$ {
+        root ${DEFAULT_DIR_TOOL}/;
+    }
+}
+EOvarnish_app
+}
+
+if service_running "redis"; then
+    printf "${RED}%s${NC}\n" "Redis Cache dang hoat dong. Varnish co the xung dot voi Redis."
+    printf "${YELLOW}%s${NC}\n" "Ban co the tiep tuc nhung can dam bao cau hinh dung."
+elif service_running "memcached"; then
+    printf "${YELLOW}%s${NC}\n" "Memcached dang hoat dong. Varnish se hoat dong song song."
+fi
+
+if service_running "varnish"; then
+    printf "${GREEN}%s${NC}\n" "Varnish da ton tai tren VPS."
+else
+    _set_var
+    _confirm
+
+    if [[ "${prompt_varnish}" =~ ^([yY])$ ]]; then
+        _backup_nginx_config
+        _install_varnish
+        _create_varnish_config
+        _configure_nginx_backend
+        _install_varnish_admin
+        _create_varnish_nginx_app
+        
+        clear
+        if service_running "varnish"; then
+            notify_install_varnish="Cai dat Varnish Cache thanh cong."
+            printf "%s\n" "${GREEN}${notify_install_varnish}${NC}"
+            printf "%s\n" "${GREEN}Truy cap /varnish de quan ly cache.${NC}"
+            printf "%s\n" "${YELLOW}Luu y: Ban can cau hinh domain de su dung Varnish.${NC}"
+        else
+            notify_install_varnish="Cai dat Varnish Cache that bai hoac Varnish khong hoat dong."
+            printf "%s\n" "${RED}${notify_install_varnish}${NC}"
+        fi
+    else
+        clear
+        printf "%s\n" "${RED}Huy cai dat Varnish Cache.${NC}"
+    fi
+fi
+
+menu_cache

@@ -1,0 +1,324 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_domain_action(){
+    clear
+    printf "%s\n" "Lua chon thao tac ban muon thuc hien"
+    PS3="Nhap vao lua chon cua ban [ 1 - 3 ]: "
+    options=("Bat Varnish cho domain" "Tat Varnish cho domain" "Xem danh sach domain" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Tat Varnish cho domain")
+            action="disable"
+            break
+            ;;
+        "Bat Varnish cho domain")
+            action="enable"
+            break
+            ;;
+        "Xem danh sach domain")
+            action="list"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long chon lai. $REPLY" ;;
+        esac
+    done
+    sleep 1
+}
+
+_select_domain_enable() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            check_varnish=$(grep -w "varnish_enabled=yes" "${USER_DIR}/.${domain}.conf" 2>/dev/null)
+            if [[ -z "${check_varnish}" ]]; then
+                domains+=("${domain}")
+            fi
+        done
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}Tat ca cac website deu da duoc cau hinh Varnish Cache.${NC}")
+        else
+            echo "Lua chon website"
+            PS3="${INPUT_SELECT} [0 = Thoat]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_select_domain_disable() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            check_varnish=$(grep -w "varnish_enabled=yes" "${USER_DIR}/.${domain}.conf" 2>/dev/null)
+            if [[ -n "${check_varnish}" ]]; then
+                domains+=("${domain}")
+            fi
+        done
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}Chua co website nao duoc cau hinh Varnish Cache.${NC}")
+        else
+            echo "Lua chon website"
+            PS3="${INPUT_SELECT} [0 = Thoat]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_list_varnish_domains() {
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        printf "%s\n" "${GREEN}=== DANH SACH DOMAIN SU DUNG VARNISH ===${NC}"
+        printf "%-30s %-15s\n" "DOMAIN" "TRANG THAI"
+        printf "%s\n" "=============================================="
+        
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            check_varnish=$(grep -w "varnish_enabled=yes" "${USER_DIR}/.${domain}.conf" 2>/dev/null)
+            if [[ -n "${check_varnish}" ]]; then
+                printf "%-30s ${GREEN}%-15s${NC}\n" "${domain}" "BAT"
+            else
+                printf "%-30s ${RED}%-15s${NC}\n" "${domain}" "TAT"
+            fi
+        done
+        printf "%s\n" "=============================================="
+    else
+        printf "%s\n" "${RED}Khong co domain nao.${NC}"
+    fi
+    
+    printf "%s\n" ""
+    read -r -p "Nhan Enter de tiep tuc..."
+}
+
+_confirm_enable() {
+    while true; do
+        read -r -p "Ban co muon bat Varnish Cache cho website ${domain} khong (y/n)? " prompt_enable
+        echo
+        if [[ "${prompt_enable}" =~ ^([yY])$ || "${prompt_enable}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_confirm_disable() {
+    while true; do
+        read -r -p "Ban muon tat Varnish Cache cho website ${domain} (y/n)? " prompt_disable
+        echo
+        if [[ "${prompt_disable}" =~ ^([yY])$ || "${prompt_disable}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_enable_varnish_domain() {
+    user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
+    
+    # Backup current vhost
+    cp "${VHOST_DIR}/${domain}.conf" "${VHOST_DIR}/${domain}.conf.pre-varnish"
+    
+    # Modify vhost to listen on port 8080 instead of 80
+    sed -i 's/listen 80;/listen 8080;/g' "${VHOST_DIR}/${domain}.conf"
+    sed -i 's/listen \[::\]:80;/listen [::]:8080;/g' "${VHOST_DIR}/${domain}.conf"
+    
+    # Create Varnish frontend vhost
+    cat > "${VHOST_DIR}/${domain}_varnish.conf" << EOvarnish_vhost
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${domain} www.${domain};
+    
+    # Real IP from Varnish
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    
+    # Pass all requests to backend (port 8080)
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        
+        # Cache control
+        proxy_cache_bypass \$http_cache_control;
+        add_header X-Proxy-Cache \$upstream_cache_status;
+    }
+    
+    # Health check endpoint
+    location = /varnish-health {
+        access_log off;
+        return 200 "healthy";
+        add_header Content-Type text/plain;
+    }
+}
+
+# HTTPS configuration (if SSL exists)
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${domain} www.${domain};
+    
+    # SSL configuration will be added here if exists
+    include /etc/nginx/ssl/*/ssl.conf;
+    
+    # Real IP from Varnish
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    
+    # Pass all requests to Varnish
+    location / {
+        proxy_pass http://127.0.0.1:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+    }
+}
+EOvarnish_vhost
+    
+    # Mark domain as Varnish enabled
+    sed -i '/varnish_enabled=/d' "${USER_DIR}/.${domain}.conf"
+    echo "varnish_enabled=yes" >> "${USER_DIR}/.${domain}.conf"
+    
+    notify="Bat Varnish Cache cho domain ${domain} thanh cong."
+}
+
+_disable_varnish_domain() {
+    user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
+    
+    # Restore original vhost configuration
+    if [ -f "${VHOST_DIR}/${domain}.conf.pre-varnish" ]; then
+        cp "${VHOST_DIR}/${domain}.conf.pre-varnish" "${VHOST_DIR}/${domain}.conf"
+        rm -f "${VHOST_DIR}/${domain}.conf.pre-varnish"
+    else
+        # Fallback: change port back to 80
+        sed -i 's/listen 8080;/listen 80;/g' "${VHOST_DIR}/${domain}.conf"
+        sed -i 's/listen \[::\]:8080;/listen [::]:80;/g' "${VHOST_DIR}/${domain}.conf"
+    fi
+    
+    # Remove Varnish frontend vhost
+    rm -f "${VHOST_DIR}/${domain}_varnish.conf"
+    
+    # Mark domain as Varnish disabled
+    sed -i '/varnish_enabled=/d' "${USER_DIR}/.${domain}.conf"
+    echo "varnish_enabled=no" >> "${USER_DIR}/.${domain}.conf"
+    
+    notify="Tat Varnish Cache cho domain ${domain} thanh cong."
+}
+
+_run() {
+    if [ "${action}" == "enable" ]; then
+        _confirm_enable
+        if [[ "${prompt_enable}" =~ ^([yY])$ ]]; then
+            _enable_varnish_domain
+        else
+            ALERT=$(printf "%s\n" "${RED}Huy thao tac.${NC}")
+        fi
+    elif [ "${action}" == "disable" ]; then
+        _confirm_disable
+        if [[ "${prompt_disable}" =~ ^([yY])$ ]]; then
+            _disable_varnish_domain
+        else
+            ALERT=$(printf "%s\n" "${RED}Huy thao tac.${NC}")
+        fi
+    elif [ "${action}" == "list" ]; then
+        _list_varnish_domains
+        notify=""
+    fi
+
+    if [ -z "${ALERT}" ] && [ -n "${notify}" ]; then
+        if nginx -t; then
+            _restart_service
+            clear
+            printf "%s\n" "${GREEN}${notify}${NC}"
+        else
+            clear
+            nginx -t
+            printf "%s\n" "${RED}${lang_error_vhost}${NC}"
+            printf "%s\n" "${RED}${lang_use_rewrite_config}${NC}"
+        fi
+    elif [ -n "${ALERT}" ]; then
+        clear
+        printf "%s\n" "${ALERT}"
+    fi
+}
+
+domain=""
+ALERT=""
+action=""
+notify=""
+
+_domain_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "${RED}%s${NC}\n" "Huy thao tac."
+else
+    if [ "${action}" == "enable" ]; then
+        _select_domain_enable
+    elif [ "${action}" == "disable" ]; then
+        _select_domain_disable
+    elif [ "${action}" == "list" ]; then
+        _list_varnish_domains
+        menu_cache
+        exit 0
+    fi
+
+    if [[ -z "${domain}" && -z "${ALERT}" ]]; then
+        clear
+        printf "%s\n" "${RED}Ban da chon huy thao tac${NC}"
+    else
+        if [ -z "${ALERT}" ]; then
+            _run
+        else
+            clear
+            printf "%s\n" "${ALERT}"
+        fi
+    fi
+fi
+
+menu_cache

@@ -126,16 +126,44 @@ cache_fastcgi(){
     . /var/hostvn/menu/controller/cache/nginx_cache
 }
 
-opcache_enable_disable(){
-    . /var/hostvn/menu/controller/cache/opcache/enable_disable
+cache_manage_varnish(){
+    . /var/hostvn/menu/controller/cache/manage_varnish
 }
 
-opcache_add_blacklist(){
-    . /var/hostvn/menu/controller/cache/opcache/add_blacklist
+cache_install_varnish(){
+    . /var/hostvn/menu/controller/cache/install_varnish
 }
 
-opcache_remove_blacklist(){
-    . /var/hostvn/menu/controller/cache/opcache/remove_blacklist
+cache_varnish_service(){
+    . /var/hostvn/menu/controller/cache/varnish_service
+}
+
+cache_reinstall_varnish(){
+    . /var/hostvn/menu/controller/cache/install_varnish
+}
+
+cache_remove_varnish(){
+    . /var/hostvn/menu/controller/cache/remove_varnish
+}
+
+cache_varnish_domain(){
+    . /var/hostvn/menu/controller/cache/varnish_domain
+}
+
+cache_varnish_purge(){
+    . /var/hostvn/menu/controller/cache/varnish_purge
+}
+
+cache_varnish_stats(){
+    . /var/hostvn/menu/controller/cache/varnish_stats
+}
+
+cache_varnish_config(){
+    . /var/hostvn/menu/controller/cache/varnish_config
+}
+
+cache_reinstall_varnish_new(){
+    . /var/hostvn/menu/controller/cache/reinstall_varnish
 }
 
 menu_lemp(){

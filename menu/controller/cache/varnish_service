@@ -1,0 +1,215 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_service_action(){
+    clear
+    varnish_status=$(systemctl is-active varnish 2>/dev/null)
+    if [[ "${varnish_status}" == "active" ]]; then
+        status_text="${GREEN}Dang chay${NC}"
+        action_text="Tat"
+        action_value="stop"
+    else
+        status_text="${RED}Dang tat${NC}"
+        action_text="Bat"
+        action_value="start"
+    fi
+    
+    printf "%s\n" "Trang thai Varnish Cache: ${status_text}"
+    printf "%s\n" ""
+    
+    PS3="Nhap vao lua chon cua ban [ 1 - 4 ]: "
+    options=("${action_text} Varnish" "Khoi dong lai Varnish" "Xem trang thai chi tiet" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "${action_text} Varnish")
+            action="${action_value}"
+            break
+            ;;
+        "Khoi dong lai Varnish")
+            action="restart"
+            break
+            ;;
+        "Xem trang thai chi tiet")
+            action="status"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long chon lai. $REPLY" ;;
+        esac
+    done
+    sleep 1
+}
+
+_start_varnish() {
+    printf "%s\n" "${GREEN}Dang bat Varnish Cache...${NC}"
+    
+    if systemctl start varnish; then
+        sleep 2
+        if systemctl is-active varnish >/dev/null 2>&1; then
+            systemctl enable varnish
+            printf "%s\n" "${GREEN}Bat Varnish Cache thanh cong.${NC}"
+            printf "%s\n" "${GREEN}Varnish da duoc tu dong khoi dong cung he thong.${NC}"
+        else
+            printf "%s\n" "${RED}Bat Varnish Cache that bai.${NC}"
+            printf "%s\n" "${RED}Kiem tra log: journalctl -u varnish${NC}"
+        fi
+    else
+        printf "%s\n" "${RED}Khong the bat Varnish Cache.${NC}"
+    fi
+}
+
+_stop_varnish() {
+    printf "%s\n" "${YELLOW}Dang tat Varnish Cache...${NC}"
+    
+    if systemctl stop varnish; then
+        systemctl disable varnish
+        printf "%s\n" "${GREEN}Tat Varnish Cache thanh cong.${NC}"
+        printf "%s\n" "${YELLOW}Luu y: Cac domain su dung Varnish se khong hoat dong binh thuong.${NC}"
+    else
+        printf "%s\n" "${RED}Khong the tat Varnish Cache.${NC}"
+    fi
+}
+
+_restart_varnish() {
+    printf "%s\n" "${GREEN}Dang khoi dong lai Varnish Cache...${NC}"
+    
+    if systemctl restart varnish; then
+        sleep 2
+        if systemctl is-active varnish >/dev/null 2>&1; then
+            printf "%s\n" "${GREEN}Khoi dong lai Varnish Cache thanh cong.${NC}"
+        else
+            printf "%s\n" "${RED}Khoi dong lai Varnish Cache that bai.${NC}"
+            printf "%s\n" "${RED}Kiem tra log: journalctl -u varnish${NC}"
+        fi
+    else
+        printf "%s\n" "${RED}Khong the khoi dong lai Varnish Cache.${NC}"
+    fi
+}
+
+_show_varnish_status() {
+    printf "%s\n" "${GREEN}=== TRANG THAI VARNISH CACHE ===${NC}"
+    printf "%s\n" ""
+    
+    # Service status
+    printf "%s\n" "Service Status:"
+    systemctl status varnish --no-pager -l
+    printf "%s\n" ""
+    
+    # Port listening
+    printf "%s\n" "Ports:"
+    ss -tlnp | grep -E "(varnish|:80|:6082)" || echo "Khong co port nao dang lang nghe"
+    printf "%s\n" ""
+    
+    # Memory usage
+    printf "%s\n" "Memory Usage:"
+    ps aux | grep "[v]arnish" | awk '{print "PID: " $2 ", CPU: " $3 "%, MEM: " $4 "%, CMD: " $11}' || echo "Khong tim thay process Varnish"
+    printf "%s\n" ""
+    
+    # Cache statistics (if running)
+    if systemctl is-active varnish >/dev/null 2>&1; then
+        printf "%s\n" "Cache Statistics:"
+        if command -v varnishstat >/dev/null 2>&1; then
+            varnishstat -1 | head -20
+        else
+            printf "%s\n" "varnishstat khong kha dung"
+        fi
+    else
+        printf "%s\n" "Varnish khong dang chay, khong the lay thong ke cache."
+    fi
+    
+    printf "%s\n" ""
+    printf "%s\n" "=== KET THUC TRANG THAI ===${NC}"
+}
+
+_confirm_action() {
+    while true; do
+        case "${action}" in
+            "start")
+                read -r -p "Ban co muon bat Varnish Cache khong (y/n)? " prompt_confirm
+                ;;
+            "stop")
+                read -r -p "Ban co muon tat Varnish Cache khong (y/n)? " prompt_confirm
+                ;;
+            "restart")
+                read -r -p "Ban co muon khoi dong lai Varnish Cache khong (y/n)? " prompt_confirm
+                ;;
+        esac
+        echo
+        if [[ "${prompt_confirm}" =~ ^([yY])$ || "${prompt_confirm}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_run() {
+    case "${action}" in
+        "start")
+            _confirm_action
+            if [[ "${prompt_confirm}" =~ ^([yY])$ ]]; then
+                _start_varnish
+            else
+                printf "%s\n" "${RED}Huy thao tac.${NC}"
+            fi
+            ;;
+        "stop")
+            _confirm_action
+            if [[ "${prompt_confirm}" =~ ^([yY])$ ]]; then
+                _stop_varnish
+            else
+                printf "%s\n" "${RED}Huy thao tac.${NC}"
+            fi
+            ;;
+        "restart")
+            _confirm_action
+            if [[ "${prompt_confirm}" =~ ^([yY])$ ]]; then
+                _restart_varnish
+            else
+                printf "%s\n" "${RED}Huy thao tac.${NC}"
+            fi
+            ;;
+        "status")
+            _show_varnish_status
+            ;;
+    esac
+}
+
+# Check if Varnish is installed
+if [[ ! -f "/etc/varnish/default.vcl" ]]; then
+    printf "%s\n" "${RED}Varnish Cache chua duoc cai dat.${NC}"
+    printf "%s\n" "${RED}Vui long cai dat Varnish truoc khi su dung tinh nang nay.${NC}"
+    menu_cache
+    exit 1
+fi
+
+action=""
+
+_service_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "${RED}%s${NC}\n" "Huy thao tac."
+else
+    clear
+    _run
+fi
+
+printf "%s\n" ""
+read -r -p "Nhan Enter de tiep tuc..."
+menu_cache

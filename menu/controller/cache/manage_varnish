@@ -1,0 +1,71 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# shellcheck disable=SC1091
+source /var/hostvn/menu/route/parent
+source /var/hostvn/menu/validate/rule
+
+CHOICE=1
+varnish_status=$(pgrep varnish >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${RED}Khong hoat dong${NC}")
+if [ ! -f "/etc/varnish/default.vcl" ]; then
+    varnish_status="Chua cai dat"
+fi
+
+printf "${GREEN}%s${NC}\n" "====================="
+printf "${GREEN}%s${NC}\n" "Quan ly Varnish Cache"
+printf "${GREEN}%s${NC}\n" "====================="
+printf "${GREEN}%s${NC}\n" "Trang thai: ${varnish_status}"
+printf "${GREEN}%s${NC}\n" "====================="
+
+while [ "${CHOICE}" != "0" ]
+do
+    if [ ! -f "/etc/varnish/default.vcl" ]; then
+        printf "%s1. Cai dat Varnish Cache%s\n" "${GREEN}" "${NC}"
+        printf "%s=====================================%s\n" "${GREEN}" "${NC}"
+        read -r -p " ${SELECT_OPTION} " CHOICE
+        if [ -z "${CHOICE}" ]
+        then
+            CHOICE=1
+            continue
+        fi
+        case ${CHOICE} in
+            1) clear; cache_install_varnish ;;
+            0) clear; menu_cache ;;
+            *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
+        esac
+    else
+        printf "%s1. Bat/Tat Varnish Cache%s\n" "${GREEN}" "${NC}"
+        printf "%s2. Cai dat lai Varnish Cache%s\n" "${GREEN}" "${NC}"
+        printf "%s3. Go bo Varnish Cache%s\n" "${GREEN}" "${NC}"
+        printf "%s4. Quan ly domain%s\n" "${GREEN}" "${NC}"
+        printf "%s5. Purge cache%s\n" "${GREEN}" "${NC}"
+        printf "%s6. Xem thong ke%s\n" "${GREEN}" "${NC}"
+        printf "%s7. Cau hinh nang cao%s\n" "${GREEN}" "${NC}"
+        printf "%s=====================================%s\n" "${GREEN}" "${NC}"
+        read -r -p " ${SELECT_OPTION} " CHOICE
+        if [ -z "${CHOICE}" ]
+        then
+            CHOICE=1
+            continue
+        fi        case ${CHOICE} in
+            1) clear; cache_varnish_service ;;
+            2) clear; cache_reinstall_varnish_new ;;
+            3) clear; cache_remove_varnish ;;
+            4) clear; cache_varnish_domain ;;
+            5) clear; cache_varnish_purge ;;
+            6) clear; cache_varnish_stats ;;
+            7) clear; cache_varnish_config ;;
+            0) clear; menu_cache ;;
+            *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
+        esac
+    fi
+done

@@ -1,0 +1,253 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_confirm_removal(){
+    clear
+    printf "%s==================================%s\n" "${RED}" "${NC}"
+    printf "     %sGO BO VARNISH CACHE%s      \n" "${RED}" "${NC}"
+    printf "%s==================================%s\n" "${RED}" "${NC}"
+    printf "%s\n" "${RED}CANH BAO: Thao tac nay se go bo hoan toan Varnish Cache!${NC}"
+    printf "%s\n" "- Tat ca cau hinh Varnish se bi xoa"
+    printf "%s\n" "- Cac domain su dung Varnish se duoc khoi phuc ve cau hinh cu"
+    printf "%s\n" "- Varnish service se bi go bo khoi he thong"
+    printf "%s\n" ""
+    
+    while true; do
+        read -r -p "Ban co CHAC CHAN muon go bo Varnish Cache khong (y/n)? " prompt_remove
+        echo
+        if [[ "${prompt_remove}" =~ ^([yY])$ || "${prompt_remove}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+    
+    if [[ "${prompt_remove}" =~ ^([yY])$ ]]; then
+        printf "%s\n" ""
+        read -r -p "Nhap 'REMOVE' de xac nhan go bo (chu hoa): " confirm_text
+        if [[ "${confirm_text}" != "REMOVE" ]]; then
+            printf "%s\n" "${RED}Xac nhan khong dung. Huy thao tac.${NC}"
+            prompt_remove="n"
+        fi
+    fi
+}
+
+_restore_domains() {
+    printf "%s\n" "${GREEN}Dang khoi phuc cau hinh domain...${NC}"
+    
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            
+            # Check if domain was using Varnish
+            check_varnish=$(grep -w "varnish_enabled=yes" "${USER_DIR}/.${domain}.conf" 2>/dev/null)
+            if [[ -n "${check_varnish}" ]]; then
+                printf "%s\n" "  - Khoi phuc domain: ${domain}"
+                
+                # Remove Varnish frontend vhost
+                if [[ -f "${VHOST_DIR}/${domain}_varnish.conf" ]]; then
+                    rm -f "${VHOST_DIR}/${domain}_varnish.conf"
+                fi
+                
+                # Restore original vhost configuration
+                if [[ -f "${VHOST_DIR}/${domain}.conf.pre-varnish" ]]; then
+                    cp "${VHOST_DIR}/${domain}.conf.pre-varnish" "${VHOST_DIR}/${domain}.conf"
+                    rm -f "${VHOST_DIR}/${domain}.conf.pre-varnish"
+                else
+                    # Fallback: change port back to 80
+                    sed -i 's/listen 8080;/listen 80;/g' "${VHOST_DIR}/${domain}.conf"
+                    sed -i 's/listen \[::\]:8080;/listen [::]:80;/g' "${VHOST_DIR}/${domain}.conf"
+                fi
+                
+                # Remove Varnish flag from domain config
+                sed -i '/varnish_enabled=/d' "${USER_DIR}/.${domain}.conf"
+            fi
+        done
+    fi
+}
+
+_stop_and_remove_varnish() {
+    printf "%s\n" "${GREEN}Dang dung va go bo Varnish service...${NC}"
+    
+    # Stop Varnish service
+    if systemctl is-active varnish >/dev/null 2>&1; then
+        systemctl stop varnish
+    fi
+    
+    # Disable Varnish service
+    if systemctl is-enabled varnish >/dev/null 2>&1; then
+        systemctl disable varnish
+    fi
+    
+    # Remove custom systemd service file if exists
+    if [[ -f "/etc/systemd/system/varnish.service" ]]; then
+        rm -f "/etc/systemd/system/varnish.service"
+        systemctl daemon-reload
+    fi
+    
+    # Remove Varnish package
+    printf "%s\n" "  - Go bo goi Varnish..."
+    apt-get remove --purge varnish -y >/dev/null 2>&1
+    apt-get autoremove -y >/dev/null 2>&1
+}
+
+_remove_varnish_config() {
+    printf "%s\n" "${GREEN}Dang xoa cau hinh Varnish...${NC}"
+    
+    # Remove Varnish configuration directory
+    if [[ -d "/etc/varnish" ]]; then
+        rm -rf /etc/varnish
+    fi
+    
+    # Remove Varnish storage directory
+    if [[ -d "/var/lib/varnish" ]]; then
+        rm -rf /var/lib/varnish
+    fi
+    
+    # Remove Varnish admin interface
+    if [[ -d "${DEFAULT_DIR_TOOL}/varnish" ]]; then
+        rm -rf "${DEFAULT_DIR_TOOL}/varnish"
+    fi
+    
+    # Remove Varnish nginx app config
+    if [[ -f "/etc/nginx/apps/varnish.conf" ]]; then
+        rm -f /etc/nginx/apps/varnish.conf
+    fi
+    
+    # Remove nginx backend configuration
+    if [[ -f "/etc/nginx/sites-available/backend" ]]; then
+        rm -f /etc/nginx/sites-available/backend
+    fi
+    
+    if [[ -f "/etc/nginx/sites-enabled/backend" ]]; then
+        rm -f /etc/nginx/sites-enabled/backend
+    fi
+}
+
+_restore_nginx_config() {
+    printf "%s\n" "${GREEN}Dang khoi phuc cau hinh Nginx...${NC}"
+    
+    # Restore nginx.conf if backup exists
+    if [[ -f "/etc/nginx/nginx.conf.pre-varnish" ]]; then
+        cp /etc/nginx/nginx.conf.pre-varnish /etc/nginx/nginx.conf
+        rm -f /etc/nginx/nginx.conf.pre-varnish
+    fi
+    
+    # Remove any Varnish-related include lines from nginx.conf
+    sed -i '/varnish/d' /etc/nginx/nginx.conf 2>/dev/null || true
+}
+
+_cleanup_logs() {
+    printf "%s\n" "${GREEN}Dang xoa log files...${NC}"
+    
+    # Remove Varnish logs
+    rm -f /var/log/varnish* 2>/dev/null || true
+    
+    # Remove any Varnish-related systemd logs
+    journalctl --vacuum-time=1d >/dev/null 2>&1 || true
+}
+
+_test_nginx_config() {
+    printf "%s\n" "${GREEN}Dang kiem tra cau hinh Nginx...${NC}"
+    
+    if nginx -t; then
+        printf "%s\n" "${GREEN}Cau hinh Nginx hop le.${NC}"
+        return 0
+    else
+        printf "%s\n" "${RED}Cau hinh Nginx co loi!${NC}"
+        nginx -t
+        return 1
+    fi
+}
+
+_remove_varnish() {
+    printf "%s\n" "${GREEN}=== BAT DAU GO BO VARNISH CACHE ===${NC}"
+    
+    # Step 1: Restore domain configurations
+    _restore_domains
+    
+    # Step 2: Test nginx config before proceeding
+    if ! _test_nginx_config; then
+        printf "%s\n" "${RED}Cau hinh Nginx co van de. Dung qua trinh go bo.${NC}"
+        printf "%s\n" "${RED}Vui long kiem tra va sua loi truoc khi tiep tuc.${NC}"
+        return 1
+    fi
+    
+    # Step 3: Reload nginx with restored config
+    printf "%s\n" "${GREEN}Dang reload Nginx...${NC}"
+    if systemctl reload nginx; then
+        printf "%s\n" "${GREEN}Reload Nginx thanh cong.${NC}"
+    else
+        printf "%s\n" "${RED}Reload Nginx that bai!${NC}"
+        return 1
+    fi
+    
+    # Step 4: Stop and remove Varnish service
+    _stop_and_remove_varnish
+    
+    # Step 5: Remove Varnish configuration files
+    _remove_varnish_config
+    
+    # Step 6: Restore nginx configuration
+    _restore_nginx_config
+    
+    # Step 7: Clean up logs
+    _cleanup_logs
+    
+    # Step 8: Final nginx test and reload
+    printf "%s\n" "${GREEN}Kiem tra cuoi cung...${NC}"
+    if nginx -t && systemctl reload nginx; then
+        printf "%s\n" "${GREEN}=== GO BO VARNISH CACHE THANH CONG ===${NC}"
+        printf "%s\n" "${GREEN}Tat ca cau hinh da duoc khoi phuc ve trang thai ban dau.${NC}"
+        printf "%s\n" "${GREEN}Cac domain da hoat dong binh thuong tren port 80/443.${NC}"
+        return 0
+    else
+        printf "%s\n" "${RED}Co loi trong qua trinh kiem tra cuoi cung.${NC}"
+        printf "%s\n" "${RED}Vui long kiem tra cau hinh Nginx bang tay.${NC}"
+        return 1
+    fi
+}
+
+# Check if Varnish is installed
+if [[ ! -f "/etc/varnish/default.vcl" ]] && ! command -v varnish >/dev/null 2>&1; then
+    printf "%s\n" "${RED}Varnish Cache khong duoc cai dat tren he thong.${NC}"
+    menu_cache
+    exit 0
+fi
+
+_confirm_removal
+
+if [[ "${prompt_remove}" =~ ^([yY])$ ]]; then
+    clear
+    _remove_varnish
+    exit_code=$?
+    
+    if [[ $exit_code -eq 0 ]]; then
+        printf "%s\n" ""
+        printf "%s\n" "${GREEN}Go bo Varnish Cache hoan tat!${NC}" 
+    else
+        printf "%s\n" ""
+        printf "%s\n" "${RED}Go bo Varnish Cache khong hoan tat. Vui long kiem tra lai.${NC}"
+    fi
+else
+    clear
+    printf "%s\n" "${GREEN}Huy thao tac go bo Varnish Cache.${NC}"
+fi
+
+printf "%s\n" ""
+read -r -p "Nhan Enter de tiep tuc..."
+menu_cache

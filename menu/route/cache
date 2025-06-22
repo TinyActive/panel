@@ -23,6 +23,7 @@ do
     printf "%s3. PHP Opcache%s\n" "${GREEN}" "${NC}"
     printf "%s4. Delete cache%s\n" "${GREEN}" "${NC}"
     printf "%s5. Nginx fastcgi cache%s\n" "${GREEN}" "${NC}"
+    printf "%s6. Varnish cache%s\n" "${GREEN}" "${NC}"
     printf "%s=====================================%s\n" "${GREEN}" "${NC}"
     read -r -p " ${SELECT_OPTION} " CHOICE
     if [ -z "${CHOICE}" ]
@@ -36,6 +37,7 @@ do
         3) clear; cache_manage_opcache ;;
         4) clear; cache_clear_cache ;;
         5) clear; cache_fastcgi ;;
+        6) clear; cache_manage_varnish ;;
         0) clear; menu_primary ;;
         *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
     esac

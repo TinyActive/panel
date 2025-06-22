@@ -1,0 +1,249 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_confirm_reinstall(){
+    clear
+    printf "%s==================================%s\n" "${YELLOW}" "${NC}"
+    printf "     %sCAI DAT LAI VARNISH CACHE%s      \n" "${YELLOW}" "${NC}"
+    printf "%s==================================%s\n" "${YELLOW}" "${NC}"
+    printf "%s\n" "${YELLOW}CANH BAO: Thao tac nay se cai dat lai Varnish Cache!${NC}"
+    printf "%s\n" "- Varnish service se duoc dung lai"
+    printf "%s\n" "- Cau hinh hien tai se duoc backup"
+    printf "%s\n" "- Cau hinh moi se duoc tao tu mac dinh"
+    printf "%s\n" "- Cac domain su dung Varnish se duoc giu nguyen"
+    printf "%s\n" ""
+    
+    while true; do
+        read -r -p "Ban co muon cai dat lai Varnish Cache khong (y/n)? " prompt_reinstall
+        echo
+        if [[ "${prompt_reinstall}" =~ ^([yY])$ || "${prompt_reinstall}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+}
+
+_backup_current_config(){
+    printf "%s\n" "${GREEN}Dang backup cau hinh hien tai...${NC}"
+    
+    backup_dir="/var/backups/varnish"
+    mkdir -p "${backup_dir}"
+    backup_name="reinstall_backup_$(date +%Y%m%d_%H%M%S)"
+    
+    # Backup all Varnish related files
+    tar -czf "${backup_dir}/${backup_name}.tar.gz" \
+        /etc/varnish/ \
+        /etc/systemd/system/varnish.service \
+        "${DEFAULT_DIR_TOOL}/varnish/" \
+        /etc/nginx/apps/varnish.conf 2>/dev/null
+    
+    printf "%s\n" "${GREEN}Da backup cau hinh: ${backup_dir}/${backup_name}.tar.gz${NC}"
+}
+
+_get_current_settings(){
+    # Get current memory setting
+    current_memory=$(systemctl show varnish --property=ExecStart --value 2>/dev/null | grep -o 'malloc,[0-9]*M' | cut -d',' -f2 | cut -d'M' -f1)
+    if [[ -z "${current_memory}" ]]; then
+        current_memory="512"
+    fi
+    
+    printf "%s\n" "Cau hinh hien tai:"
+    printf "%s\n" "- Memory: ${current_memory} MB"
+    
+    # Ask if user wants to keep current settings
+    while true; do
+        read -r -p "Ban co muon giu cau hinh hien tai khong (y/n)? " keep_settings
+        echo
+        if [[ "${keep_settings}" =~ ^([yY])$ || "${keep_settings}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon cua ban khong chinh xac. Vui long nhap lai.${NC}"
+        fi
+    done
+    
+    if [[ "${keep_settings}" =~ ^([nN])$ ]]; then
+        # Ask for new memory setting
+        total_ram=$(free -m | awk '/^Mem:/{print $2}')
+        recommended_memory=$((total_ram / 4))
+        
+        printf "%s\n" "RAM tong: ${total_ram} MB"
+        printf "%s\n" "RAM de xuat cho Varnish: ${recommended_memory} MB"
+        
+        read -r -p "Nhap kich thuoc RAM cho Varnish (MB) [${recommended_memory}]: " new_memory
+        if [[ -n "${new_memory}" ]] && [[ "${new_memory}" =~ ^[0-9]+$ ]]; then
+            current_memory="${new_memory}"
+        else
+            current_memory="${recommended_memory}"
+        fi
+    fi
+    
+    MAX_MEMORY="${current_memory}"
+}
+
+_reinstall_varnish(){
+    printf "%s\n" "${GREEN}Dang cai dat lai Varnish...${NC}"
+    
+    # Stop Varnish service
+    systemctl stop varnish 2>/dev/null || true
+    
+    # Remove old package and install new
+    apt-get remove --purge varnish -y >/dev/null 2>&1
+    apt-get update -y >/dev/null 2>&1
+    apt-get install varnish -y >/dev/null 2>&1
+    
+    # Stop default service
+    systemctl stop varnish
+    systemctl disable varnish
+    
+    # Create directories
+    mkdir -p /etc/varnish/vcl.d
+    mkdir -p /var/lib/varnish/storage
+    chown -R varnish:varnish /var/lib/varnish
+    chown -R varnish:varnish /etc/varnish
+    
+    printf "%s\n" "${GREEN}Cai dat package Varnish hoan tat.${NC}"
+}
+
+_recreate_config(){
+    printf "%s\n" "${GREEN}Dang tao lai cau hinh...${NC}"
+    
+    # Source the install script functions
+    source /var/hostvn/menu/controller/cache/install_varnish
+    
+    # Create VCL configuration
+    _create_varnish_config
+    
+    # Create admin interface
+    _install_varnish_admin
+    
+    # Create nginx app config
+    _create_varnish_nginx_app
+    
+    # Configure nginx backend
+    _configure_nginx_backend
+    
+    printf "%s\n" "${GREEN}Tao lai cau hinh hoan tat.${NC}"
+}
+
+_start_varnish(){
+    printf "%s\n" "${GREEN}Dang khoi dong Varnish...${NC}"
+    
+    # Start and enable Varnish
+    systemctl start varnish
+    systemctl enable varnish
+    
+    sleep 2
+    
+    if systemctl is-active varnish >/dev/null 2>&1; then
+        printf "%s\n" "${GREEN}Khoi dong Varnish thanh cong.${NC}"
+        return 0
+    else
+        printf "%s\n" "${RED}Khoi dong Varnish that bai!${NC}"
+        printf "%s\n" "Kiem tra log: journalctl -u varnish"
+        return 1
+    fi
+}
+
+_test_domains(){
+    printf "%s\n" "${GREEN}Kiem tra cac domain su dung Varnish...${NC}"
+    
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        _cd_dir "${USER_DIR}"
+        varnish_domains=0
+        
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            
+            check_varnish=$(grep -w "varnish_enabled=yes" "${USER_DIR}/.${domain}.conf" 2>/dev/null)
+            if [[ -n "${check_varnish}" ]]; then
+                varnish_domains=$((varnish_domains + 1))
+                printf "%s\n" "  - ${domain}: ${GREEN}Su dung Varnish${NC}"
+            fi
+        done
+        
+        if [[ $varnish_domains -gt 0 ]]; then
+            printf "%s\n" ""
+            printf "%s\n" "${GREEN}Tim thay ${varnish_domains} domain dang su dung Varnish.${NC}"
+            printf "%s\n" "${GREEN}Cac domain nay se tiep tuc hoat dong voi Varnish.${NC}"
+        else
+            printf "%s\n" "${YELLOW}Khong tim thay domain nao dang su dung Varnish.${NC}"
+        fi
+    fi
+}
+
+_reinstall_process(){
+    # Step 1: Backup current config
+    _backup_current_config
+    
+    # Step 2: Get current settings
+    _get_current_settings
+    
+    # Step 3: Reinstall Varnish
+    _reinstall_varnish
+    
+    # Step 4: Recreate configuration
+    _recreate_config
+    
+    # Step 5: Start Varnish
+    if _start_varnish; then
+        # Step 6: Test domains
+        _test_domains
+        
+        printf "%s\n" ""
+        printf "%s\n" "${GREEN}=== CAI DAT LAI VARNISH THANH CONG ===${NC}"
+        printf "%s\n" "${GREEN}Varnish da duoc cai dat lai voi cau hinh moi.${NC}"
+        printf "%s\n" "${GREEN}Memory: ${MAX_MEMORY} MB${NC}"
+        printf "%s\n" "${GREEN}Truy cap /varnish de quan ly cache.${NC}"
+        return 0
+    else
+        printf "%s\n" ""
+        printf "%s\n" "${RED}=== CAI DAT LAI VARNISH THAT BAI ===${NC}"
+        printf "%s\n" "${RED}Co loi xay ra trong qua trinh cai dat lai.${NC}"
+        printf "%s\n" "${RED}Vui long kiem tra log va thu lai.${NC}"
+        return 1
+    fi
+}
+
+# Check if Varnish is installed
+if [[ ! -f "/etc/varnish/default.vcl" ]] && ! command -v varnish >/dev/null 2>&1; then
+    printf "%s\n" "${RED}Varnish Cache chua duoc cai dat.${NC}"
+    printf "%s\n" "${RED}Vui long cai dat Varnish truoc khi su dung tinh nang nay.${NC}"
+    menu_cache
+    exit 1
+fi
+
+_confirm_reinstall
+
+if [[ "${prompt_reinstall}" =~ ^([yY])$ ]]; then
+    clear
+    _reinstall_process
+    exit_code=$?
+    
+    printf "%s\n" ""
+    if [[ $exit_code -eq 0 ]]; then
+        printf "%s\n" "${GREEN}Cai dat lai Varnish Cache hoan tat!${NC}"
+    else
+        printf "%s\n" "${RED}Cai dat lai Varnish Cache khong hoan tat.${NC}"
+    fi
+else
+    clear
+    printf "%s\n" "${GREEN}Huy cai dat lai Varnish Cache.${NC}"
+fi
+
+printf "%s\n" ""
+read -r -p "Nhan Enter de tiep tuc..."
+menu_cache

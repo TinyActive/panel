@@ -1,0 +1,9 @@
+flowchart LR
+  Client[Client HTTP/HTTPS] -->|80/443| NGX_SSL[Nginx SSL Termination]
+  NGX_SSL -->|Decrypted → HTTP:80| Varnish[Varnish Cache]
+  Varnish -- cache hit --> Client
+  Varnish -- cache miss --> NGX_BACK[Nginx PHP-FPM backend:8080]
+  NGX_BACK --> PHP[PHP‑FPM] --> MySQL[(MySQL)]
+  NGX_BACK --> Varnish
+  classDef backend fill:#f9f,stroke:#333,stroke-width:1px;
+  class NGX_BACK,PHP,MySQL backend;

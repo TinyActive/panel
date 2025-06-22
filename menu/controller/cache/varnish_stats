@@ -1,0 +1,278 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_stats_action(){
+    clear
+    printf "%s\n" "Lua chon loai thong ke ban muon xem"
+    PS3="Nhap vao lua chon cua ban [ 1 - 5 ]: "
+    options=("Thong ke tong quan" "Hit/Miss ratio" "Top URLs" "Thong ke real-time" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Thong ke tong quan")
+            action="overview"
+            break
+            ;;
+        "Hit/Miss ratio")
+            action="ratio"
+            break
+            ;;
+        "Top URLs")
+            action="urls"
+            break
+            ;;
+        "Thong ke real-time")
+            action="realtime"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long chon lai. $REPLY" ;;
+        esac
+    done
+    sleep 1
+}
+
+_show_overview() {
+    printf "%s\n" "${GREEN}=== THONG KE TONG QUAN VARNISH CACHE ===${NC}"
+    printf "%s\n" ""
+    
+    # Service information
+    printf "%s\n" "${GREEN}1. TRANG THAI DICH VU:${NC}"
+    if systemctl is-active varnish >/dev/null 2>&1; then
+        printf "%s\n" "   Status: ${GREEN}Dang chay${NC}"
+        uptime=$(systemctl show varnish --property=ActiveEnterTimestamp --value | xargs -I {} date -d {} 2>/dev/null || echo "Khong xac dinh")
+        printf "%s\n" "   Uptime: ${uptime}"
+    else
+        printf "%s\n" "   Status: ${RED}Dang tat${NC}"
+    fi
+    
+    # Memory usage
+    printf "%s\n" ""
+    printf "%s\n" "${GREEN}2. SU DUNG BO NHO:${NC}"
+    if pgrep varnish >/dev/null; then
+        memory_info=$(ps aux | grep "[v]arnish" | awk '{sum+=$6} END {printf "%.2f MB\n", sum/1024}')
+        printf "%s\n" "   RAM Usage: ${memory_info}"
+        
+        # Get Varnish storage info if available
+        if command -v varnishstat >/dev/null 2>&1; then
+            storage_info=$(varnishstat -1 -f SMA.s0.g_bytes,SMA.s0.g_space 2>/dev/null | awk '
+                /SMA.s0.g_bytes/ {used=$2/1024/1024; printf "   Cache Used: %.2f MB\n", used}
+                /SMA.s0.g_space/ {free=$2/1024/1024; printf "   Cache Free: %.2f MB\n", free}
+            ')
+            if [[ -n "${storage_info}" ]]; then
+                printf "%s\n" "${storage_info}"
+            fi
+        fi
+    else
+        printf "%s\n" "   Varnish khong dang chay"
+    fi
+    
+    # Domain statistics
+    printf "%s\n" ""
+    printf "%s\n" "${GREEN}3. DOMAIN SU DUNG VARNISH:${NC}"
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        varnish_domains=0
+        total_domains=0
+        
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            total_domains=$((total_domains + 1))
+            
+            check_varnish=$(grep -w "varnish_enabled=yes" "${USER_DIR}/.${domain}.conf" 2>/dev/null)
+            if [[ -n "${check_varnish}" ]]; then
+                varnish_domains=$((varnish_domains + 1))
+            fi
+        done
+        
+        printf "%s\n" "   Tong domain: ${total_domains}"
+        printf "%s\n" "   Domain dung Varnish: ${GREEN}${varnish_domains}${NC}"
+        printf "%s\n" "   Domain khong dung: $((total_domains - varnish_domains))"
+    fi
+    
+    # Cache statistics
+    printf "%s\n" ""
+    printf "%s\n" "${GREEN}4. THONG KE CACHE:${NC}"
+    if command -v varnishstat >/dev/null 2>&1 && systemctl is-active varnish >/dev/null 2>&1; then
+        cache_stats=$(varnishstat -1 -f MAIN.cache_hit,MAIN.cache_miss,MAIN.client_req 2>/dev/null | awk '
+            /MAIN.cache_hit/ {hits=$2}
+            /MAIN.cache_miss/ {misses=$2}
+            /MAIN.client_req/ {requests=$2}
+            END {
+                if (requests > 0) {
+                    hit_rate = (hits / requests) * 100
+                    printf "   Total Requests: %d\n   Cache Hits: %d\n   Cache Misses: %d\n   Hit Rate: %.2f%%\n", requests, hits, misses, hit_rate
+                } else {
+                    print "   Chua co du lieu thong ke"
+                }
+            }
+        ')
+        printf "%s\n" "${cache_stats}"
+    else
+        printf "%s\n" "   Khong the lay thong ke cache"
+    fi
+    
+    printf "%s\n" ""
+    printf "%s\n" "${GREEN}=== KET THUC THONG KE TONG QUAN ===${NC}"
+}
+
+_show_hit_miss_ratio() {
+    printf "%s\n" "${GREEN}=== HIT/MISS RATIO STATISTICS ===${NC}"
+    printf "%s\n" ""
+    
+    if ! command -v varnishstat >/dev/null 2>&1; then
+        printf "%s\n" "${RED}varnishstat khong kha dung${NC}"
+        return 1
+    fi
+    
+    if ! systemctl is-active varnish >/dev/null 2>&1; then
+        printf "%s\n" "${RED}Varnish khong dang chay${NC}"
+        return 1
+    fi
+    
+    # Get detailed hit/miss statistics
+    printf "%s\n" "${GREEN}Cache Performance:${NC}"
+    varnishstat -1 -f MAIN.cache_hit,MAIN.cache_miss,MAIN.cache_hitpass,MAIN.cache_hitmiss 2>/dev/null | awk '
+        /MAIN.cache_hit[^p]/ {hits=$2; print "   Cache Hits: " $2}
+        /MAIN.cache_miss/ {misses=$2; print "   Cache Misses: " $2}
+        /MAIN.cache_hitpass/ {hitpass=$2; print "   Hit Pass: " $2}
+        /MAIN.cache_hitmiss/ {hitmiss=$2; print "   Hit Miss: " $2}
+        END {
+            if (hits + misses > 0) {
+                hit_rate = (hits / (hits + misses)) * 100
+                printf "   \033[32mOverall Hit Rate: %.2f%%\033[0m\n", hit_rate
+                if (hit_rate >= 80) {
+                    print "   Status: \033[32mEXCELLENT\033[0m"
+                } else if (hit_rate >= 60) {
+                    print "   Status: \033[33mGOOD\033[0m"
+                } else if (hit_rate >= 40) {
+                    print "   Status: \033[33mAVERAGE\033[0m"
+                } else {
+                    print "   Status: \033[31mPOOR\033[0m"
+                }
+            }
+        }
+    '
+    
+    printf "%s\n" ""
+    printf "%s\n" "${GREEN}Request Statistics:${NC}"
+    varnishstat -1 -f MAIN.client_req,MAIN.backend_req,MAIN.backend_fail 2>/dev/null | awk '
+        /MAIN.client_req/ {print "   Client Requests: " $2}
+        /MAIN.backend_req/ {print "   Backend Requests: " $2}
+        /MAIN.backend_fail/ {print "   Backend Failures: " $2}
+    '
+    
+    printf "%s\n" ""
+    printf "%s\n" "${GREEN}=== KET THUC HIT/MISS RATIO ===${NC}"
+}
+
+_show_top_urls() {
+    printf "%s\n" "${GREEN}=== TOP URLs STATISTICS ===${NC}"
+    printf "%s\n" ""
+    
+    if ! command -v varnishncsa >/dev/null 2>&1; then
+        printf "%s\n" "${RED}varnishncsa khong kha dung${NC}"
+        printf "%s\n" "Cai dat: apt-get install varnish-dev"
+        return 1
+    fi
+    
+    if ! systemctl is-active varnish >/dev/null 2>&1; then
+        printf "%s\n" "${RED}Varnish khong dang chay${NC}"
+        return 1
+    fi
+    
+    printf "%s\n" "${GREEN}Top 10 URLs duoc truy cap nhieu nhat (60 giay cuoi):${NC}"
+    printf "%s\n" "Dang thu thap du lieu... (Nhan Ctrl+C de dung)"
+    
+    timeout 60 varnishncsa -a -w /tmp/varnish_access.log >/dev/null 2>&1 &
+    sleep 5
+    
+    if [[ -f "/tmp/varnish_access.log" ]]; then
+        awk '{print $7}' /tmp/varnish_access.log 2>/dev/null | sort | uniq -c | sort -nr | head -10 | awk '
+            {printf "%5d  %s\n", $1, $2}
+        '
+        rm -f /tmp/varnish_access.log
+    else
+        printf "%s\n" "Khong co du lieu log"
+    fi
+    
+    printf "%s\n" ""
+    printf "%s\n" "${GREEN}=== KET THUC TOP URLs ===${NC}"
+}
+
+_show_realtime_stats() {
+    printf "%s\n" "${GREEN}=== THONG KE REAL-TIME ===${NC}"
+    printf "%s\n" "Nhan Ctrl+C de dung real-time monitoring"
+    printf "%s\n" ""
+    
+    if ! command -v varnishstat >/dev/null 2>&1; then
+        printf "%s\n" "${RED}varnishstat khong kha dung${NC}"
+        return 1
+    fi
+    
+    if ! systemctl is-active varnish >/dev/null 2>&1; then
+        printf "%s\n" "${RED}Varnish khong dang chay${NC}"
+        return 1
+    fi
+    
+    # Show real-time statistics
+    printf "%s\n" "${YELLOW}Starting real-time monitoring...${NC}"
+    sleep 2
+    
+    varnishstat -f MAIN.cache_hit,MAIN.cache_miss,MAIN.client_req,MAIN.backend_req
+}
+
+_run() {
+    case "${action}" in
+        "overview")
+            _show_overview
+            ;;
+        "ratio")
+            _show_hit_miss_ratio
+            ;;
+        "urls")
+            _show_top_urls
+            ;;
+        "realtime")
+            _show_realtime_stats
+            ;;
+    esac
+}
+
+# Check if Varnish is installed
+if [[ ! -f "/etc/varnish/default.vcl" ]]; then
+    printf "%s\n" "${RED}Varnish Cache chua duoc cai dat.${NC}"
+    menu_cache
+    exit 1
+fi
+
+action=""
+
+_stats_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "${RED}%s${NC}\n" "Huy thao tac."
+else
+    clear
+    _run
+fi
+
+printf "%s\n" ""
+read -r -p "Nhan Enter de tiep tuc..."
+menu_cache

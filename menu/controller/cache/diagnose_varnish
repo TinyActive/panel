@@ -1,0 +1,235 @@
+#!/bin/bash
+
+######################################################################
+#           Diagnose and Fix Varnish Integration Issues              #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/function
+
+printf "%s======================================%s\n" "${GREEN}" "${NC}"
+printf "%s     DIAGNOSE VARNISH ISSUES        %s\n" "${GREEN}" "${NC}"
+printf "%s======================================%s\n" "${GREEN}" "${NC}"
+
+printf "%s\n" "${YELLOW}Chuan doan va sua loi Varnish integration...${NC}"
+
+# Check 1: Nginx frontend configuration
+printf "%s\n" "\n${CYAN}1. Kiem tra Nginx frontend configuration...${NC}"
+if [ -f "/etc/nginx/sites-available/varnish-frontend" ]; then
+    printf "%s\n" "${GREEN}   ✓ Frontend config exists${NC}"
+    if [ -L "/etc/nginx/sites-enabled/varnish-frontend" ]; then
+        printf "%s\n" "${GREEN}   ✓ Frontend config enabled${NC}"
+    else
+        printf "%s\n" "${RED}   ✗ Frontend config not enabled${NC}"
+        printf "%s\n" "${YELLOW}   → Enabling frontend config...${NC}"
+        ln -s /etc/nginx/sites-available/varnish-frontend /etc/nginx/sites-enabled/varnish-frontend
+        printf "%s\n" "${GREEN}   ✓ Frontend config enabled${NC}"
+    fi
+else
+    printf "%s\n" "${RED}   ✗ Frontend config missing${NC}"
+    printf "%s\n" "${YELLOW}   → Creating frontend config...${NC}"
+    
+    # Create frontend config
+    cat > "/etc/nginx/sites-available/varnish-frontend" << 'EOF'
+# HTTP to HTTPS redirect
+server {
+    listen 80 default_server;
+    server_name _;
+    return 301 https://$server_name$request_uri;
+}
+
+# SSL Termination - Forward to Varnish
+server {
+    listen 443 ssl http2 default_server;
+    server_name _;
+    
+    # SSL Configuration
+    ssl_certificate /etc/nginx/ssl/default.crt;
+    ssl_certificate_key /etc/nginx/ssl/default.key;
+    
+    # Forward to Varnish
+    location / {
+        proxy_pass http://127.0.0.1:6081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+}
+EOF
+    
+    # Create default SSL certificate if not exists
+    if [ ! -f "/etc/nginx/ssl/default.crt" ]; then
+        mkdir -p /etc/nginx/ssl
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/nginx/ssl/default.key \
+            -out /etc/nginx/ssl/default.crt \
+            -subj "/C=VN/ST=Vietnam/L=HoChiMinh/O=LEMP/CN=default.local" 2>/dev/null
+    fi
+    
+    # Enable frontend config
+    ln -s /etc/nginx/sites-available/varnish-frontend /etc/nginx/sites-enabled/varnish-frontend
+    printf "%s\n" "${GREEN}   ✓ Frontend config created and enabled${NC}"
+fi
+
+# Check 2: Backend configuration
+printf "%s\n" "\n${CYAN}2. Kiem tra Backend configuration...${NC}"
+if [ -f "/etc/nginx/sites-available/backend" ]; then
+    printf "%s\n" "${GREEN}   ✓ Backend config exists${NC}"
+    if [ -L "/etc/nginx/sites-enabled/backend" ]; then
+        printf "%s\n" "${GREEN}   ✓ Backend config enabled${NC}"
+    else
+        printf "%s\n" "${RED}   ✗ Backend config not enabled${NC}"
+        printf "%s\n" "${YELLOW}   → Enabling backend config...${NC}"
+        ln -s /etc/nginx/sites-available/backend /etc/nginx/sites-enabled/backend
+    fi
+else
+    printf "%s\n" "${RED}   ✗ Backend config missing${NC}"
+    printf "%s\n" "${YELLOW}   → Creating backend config...${NC}"
+    
+    # Create backend config
+    cat > "/etc/nginx/sites-available/backend" << 'EOF'
+server {
+    listen 8080 default_server;
+    server_name _;
+    
+    # Nginx status for Varnish health check
+    location /nginx_status {
+        stub_status on;
+        access_log off;
+        allow 127.0.0.1;
+        deny all;
+    }
+    
+    # Default response for health check
+    location = /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+    
+    # Default 404 for backend
+    location / {
+        return 404 "Backend server - no domain configured\n";
+        add_header Content-Type text/plain;
+    }
+}
+EOF
+    
+    # Enable backend config
+    ln -s /etc/nginx/sites-available/backend /etc/nginx/sites-enabled/backend
+    printf "%s\n" "${GREEN}   ✓ Backend config created and enabled${NC}"
+fi
+
+# Check 3: Remove conflicting default sites
+printf "%s\n" "\n${CYAN}3. Kiem tra va xoa cac site xung dot...${NC}"
+conflicting_sites=()
+for site in /etc/nginx/sites-enabled/*; do
+    if [ -f "$site" ]; then
+        site_name=$(basename "$site")
+        if [[ "$site_name" != "varnish-frontend" && "$site_name" != "backend" ]]; then
+            # Check if this site listens on port 80 or 443 default_server
+            if grep -q "listen.*default_server" "$site" 2>/dev/null; then
+                conflicting_sites+=("$site_name")
+            fi
+        fi
+    fi
+done
+
+if [ ${#conflicting_sites[@]} -gt 0 ]; then
+    printf "%s\n" "${YELLOW}   → Found conflicting default_server sites: ${conflicting_sites[*]}${NC}"
+    for site in "${conflicting_sites[@]}"; do
+        printf "%s\n" "${YELLOW}   → Removing default_server from: $site${NC}"
+        sed -i 's/listen \([0-9]*\) default_server;/listen \1;/g' "/etc/nginx/sites-enabled/$site"
+        sed -i 's/listen \[\[::\]\]:\([0-9]*\) default_server;/listen [::]:\1;/g' "/etc/nginx/sites-enabled/$site"
+    done
+    printf "%s\n" "${GREEN}   ✓ Removed conflicting default_server directives${NC}"
+else
+    printf "%s\n" "${GREEN}   ✓ No conflicting sites found${NC}"
+fi
+
+# Check 4: Test and reload Nginx
+printf "%s\n" "\n${CYAN}4. Test va reload Nginx...${NC}"
+nginx -t 2>&1 | while read line; do
+    if echo "$line" | grep -q "successful"; then
+        printf "%s\n" "${GREEN}   ✓ $line${NC}"
+    elif echo "$line" | grep -q "error"; then
+        printf "%s\n" "${RED}   ✗ $line${NC}"
+    else
+        printf "%s\n" "${YELLOW}   → $line${NC}"
+    fi
+done
+
+if nginx -t >/dev/null 2>&1; then
+    printf "%s\n" "${YELLOW}   → Reloading Nginx...${NC}"
+    systemctl reload nginx
+    printf "%s\n" "${GREEN}   ✓ Nginx reloaded successfully${NC}"
+else
+    printf "%s\n" "${RED}   ✗ Nginx configuration has errors${NC}"
+    exit 1
+fi
+
+# Check 5: Test connectivity
+printf "%s\n" "\n${CYAN}5. Test ket noi sau khi sua...${NC}"
+
+# Test backend
+printf "%s\n" "${YELLOW}   Testing backend (8080)...${NC}"
+backend_response=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://127.0.0.1:8080/health" 2>/dev/null)
+if [ "$backend_response" = "200" ]; then
+    printf "%s\n" "${GREEN}   ✓ Backend responding (HTTP $backend_response)${NC}"
+else
+    printf "%s\n" "${RED}   ✗ Backend not responding (HTTP $backend_response)${NC}"
+fi
+
+# Test Varnish
+printf "%s\n" "${YELLOW}   Testing Varnish (6081)...${NC}"
+varnish_response=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://127.0.0.1:6081/" 2>/dev/null)
+if [[ "$varnish_response" =~ ^(200|404|503)$ ]]; then
+    printf "%s\n" "${GREEN}   ✓ Varnish responding (HTTP $varnish_response)${NC}"
+else
+    printf "%s\n" "${RED}   ✗ Varnish not responding (HTTP $varnish_response)${NC}"
+fi
+
+# Test full flow
+printf "%s\n" "${YELLOW}   Testing full flow (443 → 6081 → 8080)...${NC}"
+if command -v curl >/dev/null 2>&1; then
+    full_flow_response=$(curl -s -k -o /dev/null -w "%{http_code}" --connect-timeout 5 "https://127.0.0.1/" 2>/dev/null)
+    if [[ "$full_flow_response" =~ ^(200|404|503)$ ]]; then
+        printf "%s\n" "${GREEN}   ✓ Full flow working (HTTPS $full_flow_response)${NC}"
+    else
+        printf "%s\n" "${RED}   ✗ Full flow not working (HTTPS $full_flow_response)${NC}"
+    fi
+fi
+
+# Check 6: Show final status
+printf "%s\n" "\n${CYAN}6. Trang thai cuoi cung...${NC}"
+printf "%s\n" "${YELLOW}Active sites:${NC}"
+for site in /etc/nginx/sites-enabled/*; do
+    if [ -f "$site" ]; then
+        site_name=$(basename "$site")
+        listen_ports=$(grep -E "listen [0-9]+" "$site" 2>/dev/null | head -2 | sed 's/.*listen \([0-9]*\).*/\1/' | sort -n | uniq | tr '\n' ',' | sed 's/,$//')
+        printf "%s\n" "   → $site_name (ports: $listen_ports)"
+    fi
+done
+
+printf "%s\n" "\n${YELLOW}Port status:${NC}"
+ss -tulpn | grep -E ":80|:443|:6081|:8080" | while read line; do
+    printf "%s\n" "   $line"
+done
+
+printf "%s\n" "\n${GREEN}✅ Chuan doan hoan tat!${NC}"
+printf "%s\n" "\n${YELLOW}Kiem tra cuoi cung:${NC}"
+printf "%s\n" "curl -k https://your-domain.com/"
+printf "%s\n" "curl -H 'X-Forwarded-Proto: https' http://127.0.0.1:6081/"
+
+printf "%s\n" ""
+read -r -p "Nhan Enter de thoat..."

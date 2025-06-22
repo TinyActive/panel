@@ -36,13 +36,13 @@ do    if [ ! -f "/etc/varnish/default.vcl" ]; then
         then
             CHOICE=1
             continue
-        fi
-        case ${CHOICE} in
+        fi        case ${CHOICE} in
             1) clear; cache_install_varnish ;;
             0) clear; menu_cache ;;
             *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
         esac
-    else        printf "%s1. Bat/Tat Varnish Cache%s\n" "${GREEN}" "${NC}"
+    else
+        printf "%s1. Bat/Tat Varnish Cache%s\n" "${GREEN}" "${NC}"
         printf "%s2. Cai dat lai Varnish Cache%s\n" "${GREEN}" "${NC}"
         printf "%s3. Go bo Varnish Cache%s\n" "${GREEN}" "${NC}"
         printf "%s4. Quan ly domain%s\n" "${GREEN}" "${NC}"
@@ -50,6 +50,7 @@ do    if [ ! -f "/etc/varnish/default.vcl" ]; then
         printf "%s6. Xem thong ke%s\n" "${GREEN}" "${NC}"        
         printf "%s7. Cau hinh nang cao%s\n" "${GREEN}" "${NC}"
         printf "%s8. Test cau hinh%s\n" "${GREEN}" "${NC}"
+        printf "%s9. Chuan doan va sua loi%s\n" "${GREEN}" "${NC}"
         printf "%s0. Thoat%s\n" "${GREEN}" "${NC}"
         printf "%s=====================================%s\n" "${GREEN}" "${NC}"
         read -r -p " ${SELECT_OPTION} " CHOICE
@@ -67,6 +68,7 @@ do    if [ ! -f "/etc/varnish/default.vcl" ]; then
             6) clear; cache_varnish_stats ;;
             7) clear; cache_varnish_config ;;
             8) clear; cache_test_varnish_config ;;
+            9) clear; cache_diagnose_varnish ;;
             0) clear; menu_cache ;;
             *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
         esac

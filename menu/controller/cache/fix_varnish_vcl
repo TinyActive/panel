@@ -1,0 +1,107 @@
+#!/bin/bash
+
+######################################################################
+#           Fix Varnish VCL Configuration Error                      #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/function
+
+printf "%s======================================%s\n" "${GREEN}" "${NC}"
+printf "%s         FIX VARNISH VCL ERROR       %s\n" "${GREEN}" "${NC}"
+printf "%s======================================%s\n" "${GREEN}" "${NC}"
+
+printf "%s\n" "${YELLOW}Dang sua loi cau hinh VCL...${NC}"
+
+# Check if VCL file exists
+if [ ! -f "/etc/varnish/default.vcl" ]; then
+    printf "%s\n" "${RED}File VCL khong ton tai: /etc/varnish/default.vcl${NC}"
+    exit 1
+fi
+
+# Backup current VCL
+cp /etc/varnish/default.vcl /etc/varnish/default.vcl.backup-$(date +%Y%m%d-%H%M%S)
+printf "%s\n" "${GREEN}Da backup VCL hien tai.${NC}"
+
+# Fix the VCL syntax error - remove invalid 'unset req.url;' line
+printf "%s\n" "${YELLOW}Sua loi syntax VCL...${NC}"
+
+# Remove the problematic line
+sed -i '/^[[:space:]]*unset req\.url;/d' /etc/varnish/default.vcl
+
+printf "%s\n" "${GREEN}Da sua loi VCL syntax.${NC}"
+
+# Test VCL syntax
+printf "%s\n" "${YELLOW}Kiem tra syntax VCL...${NC}"
+if varnishd -C -f /etc/varnish/default.vcl >/dev/null 2>&1; then
+    printf "%s\n" "${GREEN}✓ VCL syntax hop le.${NC}"
+else
+    printf "%s\n" "${RED}✗ VCL syntax van con loi.${NC}"
+    printf "%s\n" "${YELLOW}Chi tiet loi:${NC}"
+    varnishd -C -f /etc/varnish/default.vcl 2>&1 | head -10
+    exit 1
+fi
+
+# Stop Varnish service
+printf "%s\n" "${YELLOW}Dung dich vu Varnish...${NC}"
+systemctl stop varnish
+sleep 2
+
+# Clear any remaining processes
+if pgrep varnishd >/dev/null; then
+    printf "%s\n" "${YELLOW}Dong cac tien trinh Varnish con lai...${NC}"
+    pkill -f varnishd
+    sleep 2
+fi
+
+# Remove systemd restart limit
+printf "%s\n" "${YELLOW}Reset systemd restart limit...${NC}"
+systemctl reset-failed varnish
+
+# Start Varnish service
+printf "%s\n" "${YELLOW}Khoi dong lai Varnish...${NC}"
+systemctl start varnish
+
+# Wait a moment and check status
+sleep 3
+
+if service_running "varnish"; then
+    printf "%s\n" "${GREEN}✓ Varnish da khoi dong thanh cong!${NC}"
+    
+    # Show service status
+    printf "%s\n" "${CYAN}Trang thai dich vu:${NC}"
+    systemctl status varnish --no-pager -l
+    
+    # Test connectivity
+    printf "%s\n" "\n${YELLOW}Test ket noi Varnish...${NC}"
+    if nc -z 127.0.0.1 6081 2>/dev/null; then
+        printf "%s\n" "${GREEN}✓ Varnish dang listen tren port 6081${NC}"
+    else
+        printf "%s\n" "${RED}✗ Khong the ket noi port 6081${NC}"
+    fi
+    
+    # Show some basic stats if varnishstat is available
+    if command -v varnishstat >/dev/null 2>&1; then
+        printf "%s\n" "\n${CYAN}Thong ke Varnish:${NC}"
+        timeout 3 varnishstat -1 2>/dev/null | head -5
+    fi
+    
+else
+    printf "%s\n" "${RED}✗ Varnish van khong the khoi dong.${NC}"
+    printf "%s\n" "${YELLOW}Kiem tra log chi tiet:${NC}"
+    journalctl -u varnish --no-pager -l | tail -10
+    
+    printf "%s\n" "\n${YELLOW}Cac buoc kiem tra tiep theo:${NC}"
+    printf "%s\n" "1. journalctl -u varnish -f"
+    printf "%s\n" "2. ss -tulpn | grep :6081"
+    printf "%s\n" "3. varnishd -C -f /etc/varnish/default.vcl"
+fi
+
+printf "%s\n" "\n${GREEN}Hoan tat sua loi VCL!${NC}"
+printf "%s\n" ""
+read -r -p "Nhan Enter de thoat..."

@@ -1,0 +1,61 @@
+======================================
+         TEST VARNISH CONFIG         
+======================================
+Kiem tra trang thai dich vu...
+1. Nginx status:
+   ✓ Nginx: RUNNING
+2. Varnish status:
+   ✓ Varnish: RUNNING
+   → Listening on port: 6082
+\nKiem tra cac port dang su dung...
+Port 80 (HTTP):
+   tcp   LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=10644,fd=6),("nginx",pid=10643,fd=6),("nginx",pid=10642,fd=6),("nginx",pid=10641,fd=6),("nginx",pid=10640,fd=6))
+Port 443 (HTTPS):
+   tcp   LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=10644,fd=7),("nginx",pid=10643,fd=7),("nginx",pid=10642,fd=7),("nginx",pid=10641,fd=7),("nginx",pid=10640,fd=7))
+Port 6081 (Varnish Internal):
+   tcp   LISTEN 0      1024         0.0.0.0:6081       0.0.0.0:*    users:(("cache-main",pid=11310,fd=3),("varnishd",pid=11285,fd=3))
+   tcp   LISTEN 0      1024            [::]:6081          [::]:*    users:(("cache-main",pid=11310,fd=4),("varnishd",pid=11285,fd=4))
+Port 8080 (Nginx Backend):
+   tcp   LISTEN 0      511          0.0.0.0:8080       0.0.0.0:*    users:(("nginx",pid=10644,fd=9),("nginx",pid=10643,fd=9),("nginx",pid=10642,fd=9),("nginx",pid=10641,fd=9),("nginx",pid=10640,fd=9))
+\nKiem tra cau hinh Nginx...
+   → nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+   ✓ nginx: configuration file /etc/nginx/nginx.conf test is successful
+\nKiem tra cau hinh Varnish...
+   ✓ VCL file exists: /etc/varnish/default.vcl
+   ✓ VCL syntax: OK
+\nKiem tra ket noi backend...
+   ✓ Backend (8080): REACHABLE
+   ✓ Varnish (6081): REACHABLE
+\nKiem tra luong Architecture...
+Expected Flow: Client → Nginx SSL (443) → Varnish (6081) → Nginx Backend (8080)
+\nTest basic connectivity:
+   Testing backend (8080)... ✗ FAIL
+   Testing Varnish (6081)... ✗ FAIL
+\nCac site Nginx hien tai...
+\nThong ke Varnish (5 giay gan nhat)...
+   MGT.uptime                  43         0.98 Management process uptime
+   MGT.child_start              1         0.02 Child process started
+   MGT.child_exit               0         0.00 Child process normal exit
+   MGT.child_stop               0         0.00 Child process unexpected exit
+   MGT.child_died               0         0.00 Child process died (signal)
+   MGT.child_dump               0         0.00 Child process core dumped
+   MGT.child_panic              0         0.00 Child process panic
+   MAIN.summs                  10         0.23 stat summ operations
+   MAIN.uptime                 44         1.00 Child process uptime
+   MAIN.sess_conn               2         0.05 Sessions accepted
+\nTest hoan tat!
+\nLuu y:
+- Neu Varnish khong chay, kiem tra log: journalctl -u varnish -f
+- Neu port 80 bi xung dot, dam bao Nginx khong listen 80 khi dung Varnish
+- Architecture dung: SSL termination (443) → Varnish (6081) → Backend (8080)
+root@ubuntu-s-4vcpu-8gb-sgp1-01:/etc/nginx# journalctl -u varnish -f
+Jun 22 19:24:57 ubuntu-s-4vcpu-8gb-sgp1-01 systemd[1]: Starting varnish.service - Varnish HTTP accelerator...
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Debug: Version: varnish-7.1.1 revision 7cee1c581bead20e88d101ab3d72afb29f14d87a
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Debug: Platform: Linux,6.8.0-51-generic,x86_64,-jnone,-smalloc,-sdefault,-hcritbit
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Version: varnish-7.1.1 revision 7cee1c581bead20e88d101ab3d72afb29f14d87a
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Platform: Linux,6.8.0-51-generic,x86_64,-jnone,-smalloc,-sdefault,-hcritbit
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Debug: Child (11657) Started
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Child (11657) Started
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Child launched OK
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Info: Child (11657) said Child starts
+Jun 22 19:24:58 ubuntu-s-4vcpu-8gb-sgp1-01 varnishd[11632]: Child (11657) said Child starts

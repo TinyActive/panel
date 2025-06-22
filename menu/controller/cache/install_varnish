@@ -143,7 +143,6 @@ sub vcl_recv {
 
     # Strip query parameters from static files
     if (req.url ~ "\.(css|js|png|gif|jp(e)?g|swf|ico|pdf|txt|csv|doc)(\?.*)?$") {
-        unset req.url;
         set req.url = regsub(req.url, "\?.*$", "");
     }
 

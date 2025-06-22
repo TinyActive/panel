@@ -575,7 +575,8 @@ if service_running "varnish"; then
     printf "${GREEN}%s${NC}\n" "Varnish da ton tai tren VPS."
 else
     _set_var
-    _confirm    if [[ "${prompt_varnish}" =~ ^([yY])$ ]]; then
+    _confirm 
+    if [[ "${prompt_varnish}" =~ ^([yY])$ ]]; then
         _backup_nginx_config
         _install_varnish
         _create_varnish_config

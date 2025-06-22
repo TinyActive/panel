@@ -36,7 +36,8 @@ do    if [ ! -f "/etc/varnish/default.vcl" ]; then
         then
             CHOICE=1
             continue
-        fi        case ${CHOICE} in
+        fi
+        case ${CHOICE} in
             1) clear; cache_install_varnish ;;
             0) clear; menu_cache ;;
             *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;

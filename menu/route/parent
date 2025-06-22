@@ -162,6 +162,10 @@ cache_varnish_config(){
     . /var/hostvn/menu/controller/cache/varnish_config
 }
 
+cache_test_varnish_config(){
+    . /var/hostvn/menu/controller/cache/test_varnish_config
+}
+
 cache_reinstall_varnish_new(){
     . /var/hostvn/menu/controller/cache/reinstall_varnish
 }

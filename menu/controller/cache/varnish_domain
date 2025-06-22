@@ -156,68 +156,62 @@ _enable_varnish_domain() {
     # Backup current vhost
     cp "${VHOST_DIR}/${domain}.conf" "${VHOST_DIR}/${domain}.conf.pre-varnish"
     
-    # Modify vhost to listen on port 8080 instead of 80
+    # Modify vhost to listen on port 8080 (backend) instead of 80
     sed -i 's/listen 80;/listen 8080;/g' "${VHOST_DIR}/${domain}.conf"
     sed -i 's/listen \[::\]:80;/listen [::]:8080;/g' "${VHOST_DIR}/${domain}.conf"
+    sed -i 's/listen 80 /listen 8080 /g' "${VHOST_DIR}/${domain}.conf"
     
-    # Create Varnish frontend vhost
-    cat > "${VHOST_DIR}/${domain}_varnish.conf" << EOvarnish_vhost
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${domain} www.${domain};
+    # Remove any default_server directive (frontend will handle this)
+    sed -i 's/listen 8080 default_server;/listen 8080;/g' "${VHOST_DIR}/${domain}.conf"
     
-    # Real IP from Varnish
-    set_real_ip_from 127.0.0.1;
-    real_ip_header X-Forwarded-For;
-    real_ip_recursive on;
+    # Add backend marker comment
+    if ! grep -q "# Varnish Backend Configuration" "${VHOST_DIR}/${domain}.conf"; then
+        sed -i '1i# Varnish Backend Configuration - Listen on port 8080' "${VHOST_DIR}/${domain}.conf"
+    fi
     
-    # Pass all requests to backend (port 8080)
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Port \$server_port;
-        
-        # Cache control
-        proxy_cache_bypass \$http_cache_control;
-        add_header X-Proxy-Cache \$upstream_cache_status;
-    }
+    # Create SSL termination frontend using template
+    template_content=$(cat "${SCRIPT_ROOT}/menu/template/varnish_frontend.conf")
     
-    # Health check endpoint
-    location = /varnish-health {
-        access_log off;
-        return 200 "healthy";
-        add_header Content-Type text/plain;
-    }
-}
-
-# HTTPS configuration (if SSL exists)
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name ${domain} www.${domain};
+    # Replace domain name in template
+    template_content="${template_content//DOMAIN_NAME/${domain}}"
     
-    # SSL configuration will be added here if exists
-    include /etc/nginx/ssl/*/ssl.conf;
+    # Check if domain has SSL certificate
+    ssl_cert_path=""
+    ssl_key_path=""
     
-    # Real IP from Varnish
-    set_real_ip_from 127.0.0.1;
-    real_ip_header X-Forwarded-For;
-    real_ip_recursive on;
+    if [ -f "/etc/nginx/ssl/${domain}/${domain}.crt" ] && [ -f "/etc/nginx/ssl/${domain}/${domain}.key" ]; then
+        ssl_cert_path="/etc/nginx/ssl/${domain}/${domain}.crt"
+        ssl_key_path="/etc/nginx/ssl/${domain}/${domain}.key"
+    elif [ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ] && [ -f "/etc/letsencrypt/live/${domain}/privkey.pem" ]; then
+        ssl_cert_path="/etc/letsencrypt/live/${domain}/fullchain.pem"
+        ssl_key_path="/etc/letsencrypt/live/${domain}/privkey.pem"
+    else
+        # Use default SSL certificate
+        ssl_cert_path="/etc/nginx/ssl/default.crt"
+        ssl_key_path="/etc/nginx/ssl/default.key"
+    fi
     
-    # Pass all requests to Varnish
-    location / {
-        proxy_pass http://127.0.0.1:80;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-Port 443;
-    }
-}
+    # Replace SSL paths in template
+    template_content="${template_content//SSL_CERT_PATH/${ssl_cert_path}}"
+    template_content="${template_content//SSL_KEY_PATH/${ssl_key_path}}"
+    
+    # Write frontend configuration
+    echo "${template_content}" > "${VHOST_DIR}/${domain}_frontend.conf"
+    
+    # Remove the old vhost file from sites-enabled temporarily during transition
+    if [ -L "/etc/nginx/sites-enabled/${domain}.conf" ]; then
+        rm -f "/etc/nginx/sites-enabled/${domain}.conf"
+    fi
+    
+    # Create new symlink for backend config
+    if [ ! -L "/etc/nginx/sites-enabled/${domain}.conf" ]; then
+        ln -s "${VHOST_DIR}/${domain}.conf" "/etc/nginx/sites-enabled/${domain}.conf"
+    fi
+    
+    # Create symlink for frontend config
+    if [ ! -L "/etc/nginx/sites-enabled/${domain}_frontend.conf" ]; then
+        ln -s "${VHOST_DIR}/${domain}_frontend.conf" "/etc/nginx/sites-enabled/${domain}_frontend.conf"
+    fi
 EOvarnish_vhost
     
     # Mark domain as Varnish enabled
@@ -230,18 +224,32 @@ EOvarnish_vhost
 _disable_varnish_domain() {
     user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
     
+    # Remove frontend configuration
+    if [ -f "${VHOST_DIR}/${domain}_frontend.conf" ]; then
+        rm -f "${VHOST_DIR}/${domain}_frontend.conf"
+    fi
+    
+    # Remove frontend symlink
+    if [ -L "/etc/nginx/sites-enabled/${domain}_frontend.conf" ]; then
+        rm -f "/etc/nginx/sites-enabled/${domain}_frontend.conf"
+    fi
+    
     # Restore original vhost configuration
     if [ -f "${VHOST_DIR}/${domain}.conf.pre-varnish" ]; then
         cp "${VHOST_DIR}/${domain}.conf.pre-varnish" "${VHOST_DIR}/${domain}.conf"
         rm -f "${VHOST_DIR}/${domain}.conf.pre-varnish"
     else
-        # Fallback: change port back to 80
+        # Fallback: change port back to 80 and remove backend comment
         sed -i 's/listen 8080;/listen 80;/g' "${VHOST_DIR}/${domain}.conf"
         sed -i 's/listen \[::\]:8080;/listen [::]:80;/g' "${VHOST_DIR}/${domain}.conf"
+        sed -i 's/listen 8080 /listen 80 /g' "${VHOST_DIR}/${domain}.conf"
+        sed -i '/# Varnish Backend Configuration/d' "${VHOST_DIR}/${domain}.conf"
     fi
     
-    # Remove Varnish frontend vhost
-    rm -f "${VHOST_DIR}/${domain}_varnish.conf"
+    # Ensure backend symlink exists
+    if [ ! -L "/etc/nginx/sites-enabled/${domain}.conf" ]; then
+        ln -s "${VHOST_DIR}/${domain}.conf" "/etc/nginx/sites-enabled/${domain}.conf"
+    fi
     
     # Mark domain as Varnish disabled
     sed -i '/varnish_enabled=/d' "${USER_DIR}/.${domain}.conf"

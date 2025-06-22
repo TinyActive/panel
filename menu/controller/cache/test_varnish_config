@@ -1,0 +1,168 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/function
+
+printf "%s======================================%s\n" "${GREEN}" "${NC}"
+printf "%s         TEST VARNISH CONFIG         %s\n" "${GREEN}" "${NC}"
+printf "%s======================================%s\n" "${GREEN}" "${NC}"
+
+printf "%s\n" "${YELLOW}Kiem tra trang thai dich vu...${NC}"
+
+# Check Nginx status
+printf "%s\n" "1. Nginx status:"
+if service_running "nginx"; then
+    printf "%s   ✓ Nginx: RUNNING%s\n" "${GREEN}" "${NC}"
+else
+    printf "%s   ✗ Nginx: STOPPED%s\n" "${RED}" "${NC}"
+fi
+
+# Check Varnish status
+printf "%s\n" "2. Varnish status:"
+if service_running "varnish"; then
+    printf "%s   ✓ Varnish: RUNNING%s\n" "${GREEN}" "${NC}"
+    # Get Varnish port
+    varnish_port=$(ss -tulpn | grep varnishd | grep LISTEN | head -1 | awk '{print $5}' | cut -d':' -f2)
+    printf "%s   → Listening on port: %s%s\n" "${YELLOW}" "${varnish_port}" "${NC}"
+else
+    printf "%s   ✗ Varnish: STOPPED%s\n" "${RED}" "${NC}"
+fi
+
+# Check port usage
+printf "%s\n" "\n${YELLOW}Kiem tra cac port dang su dung...${NC}"
+printf "%s\n" "Port 80 (HTTP):"
+ss -tulpn | grep ":80 " | while read line; do
+    printf "%s   %s%s\n" "${YELLOW}" "$line" "${NC}"
+done
+
+printf "%s\n" "Port 443 (HTTPS):"
+ss -tulpn | grep ":443 " | while read line; do
+    printf "%s   %s%s\n" "${YELLOW}" "$line" "${NC}"
+done
+
+printf "%s\n" "Port 6081 (Varnish Internal):"
+ss -tulpn | grep ":6081 " | while read line; do
+    printf "%s   %s%s\n" "${YELLOW}" "$line" "${NC}"
+done
+
+printf "%s\n" "Port 8080 (Nginx Backend):"
+ss -tulpn | grep ":8080 " | while read line; do
+    printf "%s   %s%s\n" "${YELLOW}" "$line" "${NC}"
+done
+
+# Test Nginx configuration
+printf "%s\n" "\n${YELLOW}Kiem tra cau hinh Nginx...${NC}"
+nginx -t 2>&1 | while read line; do
+    if echo "$line" | grep -q "successful"; then
+        printf "%s   ✓ %s%s\n" "${GREEN}" "$line" "${NC}"
+    elif echo "$line" | grep -q "error"; then
+        printf "%s   ✗ %s%s\n" "${RED}" "$line" "${NC}"
+    else
+        printf "%s   → %s%s\n" "${YELLOW}" "$line" "${NC}"
+    fi
+done
+
+# Check Varnish configuration
+if [ -f "/etc/varnish/default.vcl" ]; then
+    printf "%s\n" "\n${YELLOW}Kiem tra cau hinh Varnish...${NC}"
+    printf "%s   ✓ VCL file exists: /etc/varnish/default.vcl%s\n" "${GREEN}" "${NC}"
+    
+    # Test VCL syntax if varnishd is available
+    if command -v varnishd >/dev/null 2>&1; then
+        varnishd -C -f /etc/varnish/default.vcl >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            printf "%s   ✓ VCL syntax: OK%s\n" "${GREEN}" "${NC}"
+        else
+            printf "%s   ✗ VCL syntax: ERROR%s\n" "${RED}" "${NC}"
+        fi
+    fi
+else
+    printf "%s   ✗ VCL file not found%s\n" "${RED}" "${NC}"
+fi
+
+# Check backend connectivity
+printf "%s\n" "\n${YELLOW}Kiem tra ket noi backend...${NC}"
+if nc -z 127.0.0.1 8080 2>/dev/null; then
+    printf "%s   ✓ Backend (8080): REACHABLE%s\n" "${GREEN}" "${NC}"
+else
+    printf "%s   ✗ Backend (8080): UNREACHABLE%s\n" "${RED}" "${NC}"
+fi
+
+if nc -z 127.0.0.1 6081 2>/dev/null; then
+    printf "%s   ✓ Varnish (6081): REACHABLE%s\n" "${GREEN}" "${NC}"
+else
+    printf "%s   ✗ Varnish (6081): UNREACHABLE%s\n" "${RED}" "${NC}"
+fi
+
+# Architecture flow test
+printf "%s\n" "\n${YELLOW}Kiem tra luong Architecture...${NC}"
+printf "%s\n" "${CYAN}Expected Flow: Client → Nginx SSL (443) → Varnish (6081) → Nginx Backend (8080)${NC}"
+
+# Test with curl if available
+if command -v curl >/dev/null 2>&1; then
+    printf "%s\n" "\nTest basic connectivity:"
+    
+    # Test direct backend
+    printf "%s   Testing backend (8080)...%s" "${YELLOW}" "${NC}"
+    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://127.0.0.1:8080/health" 2>/dev/null | grep -q "200"; then
+        printf "%s ✓ OK%s\n" "${GREEN}" "${NC}"
+    else
+        printf "%s ✗ FAIL%s\n" "${RED}" "${NC}"
+    fi
+    
+    # Test Varnish
+    printf "%s   Testing Varnish (6081)...%s" "${YELLOW}" "${NC}"
+    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://127.0.0.1:6081/" 2>/dev/null | grep -q -E "200|404"; then
+        printf "%s ✓ OK%s\n" "${GREEN}" "${NC}"
+    else
+        printf "%s ✗ FAIL%s\n" "${RED}" "${NC}"
+    fi
+fi
+
+# Show active Nginx sites
+printf "%s\n" "\n${YELLOW}Cac site Nginx hien tai...${NC}"
+if [ -d "/etc/nginx/sites-enabled" ]; then
+    for site in /etc/nginx/sites-enabled/*; do
+        site_name=$(basename "$site")
+        if [ -f "$site" ]; then
+            printf "%s   → %s" "${YELLOW}" "$site_name"
+            
+            # Check if it's a frontend config
+            if echo "$site_name" | grep -q "_frontend"; then
+                printf " (Frontend SSL)%s\n" "${NC}"
+            elif echo "$site_name" | grep -q "backend"; then
+                printf " (Backend)%s\n" "${NC}"
+            else
+                # Check listen ports
+                listen_ports=$(grep -E "listen [0-9]+" "$site" 2>/dev/null | head -2 | sed 's/.*listen \([0-9]*\).*/\1/' | sort -n | uniq | tr '\n' ',' | sed 's/,$//')
+                printf " (ports: %s)%s\n" "$listen_ports" "${NC}"
+            fi
+        fi
+    done
+fi
+
+# Show Varnish stats if running
+if service_running "varnish" && command -v varnishstat >/dev/null 2>&1; then
+    printf "%s\n" "\n${YELLOW}Thong ke Varnish (5 giay gan nhat)...${NC}"
+    timeout 5 varnishstat -1 2>/dev/null | head -10 | while read line; do
+        printf "%s   %s%s\n" "${CYAN}" "$line" "${NC}"
+    done
+fi
+
+printf "%s\n" "\n${GREEN}Test hoan tat!${NC}"
+printf "%s\n" "\n${YELLOW}Luu y:${NC}"
+printf "%s\n" "- Neu Varnish khong chay, kiem tra log: journalctl -u varnish -f"
+printf "%s\n" "- Neu port 80 bi xung dot, dam bao Nginx khong listen 80 khi dung Varnish"
+printf "%s\n" "- Architecture dung: SSL termination (443) → Varnish (6081) → Backend (8080)"
+
+printf "%s\n" ""
+read -r -p "Nhan Enter de thoat..."

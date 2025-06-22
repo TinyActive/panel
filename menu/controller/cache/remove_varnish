@@ -47,36 +47,40 @@ _confirm_removal(){
 _restore_domains() {
     printf "%s\n" "${GREEN}Dang khoi phuc cau hinh domain...${NC}"
     
-    if [[ "$(ls -A "${USER_DIR}")" ]]; then
-        _cd_dir "${USER_DIR}"
-        for entry in .*.conf; do
-            domain=${entry/./}
-            domain=${domain//.conf/}
+    # Restore domain vhost configurations
+    for vhost_file in "${VHOST_DIR}"/*.conf; do
+        if [ -f "$vhost_file" ]; then
+            domain_name=$(basename "$vhost_file" .conf)
             
-            # Check if domain was using Varnish
-            check_varnish=$(grep -w "varnish_enabled=yes" "${USER_DIR}/.${domain}.conf" 2>/dev/null)
-            if [[ -n "${check_varnish}" ]]; then
-                printf "%s\n" "  - Khoi phuc domain: ${domain}"
-                
-                # Remove Varnish frontend vhost
-                if [[ -f "${VHOST_DIR}/${domain}_varnish.conf" ]]; then
-                    rm -f "${VHOST_DIR}/${domain}_varnish.conf"
-                fi
-                
-                # Restore original vhost configuration
-                if [[ -f "${VHOST_DIR}/${domain}.conf.pre-varnish" ]]; then
-                    cp "${VHOST_DIR}/${domain}.conf.pre-varnish" "${VHOST_DIR}/${domain}.conf"
-                    rm -f "${VHOST_DIR}/${domain}.conf.pre-varnish"
-                else
-                    # Fallback: change port back to 80
-                    sed -i 's/listen 8080;/listen 80;/g' "${VHOST_DIR}/${domain}.conf"
-                    sed -i 's/listen \[::\]:8080;/listen [::]:80;/g' "${VHOST_DIR}/${domain}.conf"
-                fi
-                
-                # Remove Varnish flag from domain config
-                sed -i '/varnish_enabled=/d' "${USER_DIR}/.${domain}.conf"
+            # Skip our special configs
+            if [[ "$domain_name" == "backend" || "$domain_name" == "varnish-frontend" || "$domain_name" == "default" ]]; then
+                continue
             fi
-        done
+            
+            printf "%s\n" "  - Khoi phuc domain: $domain_name"
+            
+            # Check if this was a Varnish backend config
+            if grep -q "# Varnish Backend Configuration" "$vhost_file"; then
+                # Change listen 8080 back to listen 80
+                sed -i 's/listen 8080;/listen 80;/g' "$vhost_file"
+                sed -i 's/listen 8080 /listen 80 /g' "$vhost_file"
+                
+                # Remove Varnish backend comment
+                sed -i '/# Varnish Backend Configuration/d' "$vhost_file"
+                
+                printf "%s\n" "    → Chuyen port 8080 → 80"
+            fi
+        fi
+    done
+    
+    # Remove Varnish frontend configuration
+    if [[ -f "/etc/nginx/sites-enabled/varnish-frontend" ]]; then
+        rm -f "/etc/nginx/sites-enabled/varnish-frontend"
+        printf "%s\n" "  - Xoa cau hinh Varnish frontend"
+    fi
+    
+    if [[ -f "/etc/nginx/sites-available/varnish-frontend" ]]; then
+        rm -f "/etc/nginx/sites-available/varnish-frontend"
     fi
 }
 

@@ -27,9 +27,9 @@ printf "${GREEN}%s${NC}\n" "Trang thai: ${varnish_status}"
 printf "${GREEN}%s${NC}\n" "====================="
 
 while [ "${CHOICE}" != "0" ]
-do
-    if [ ! -f "/etc/varnish/default.vcl" ]; then
+do    if [ ! -f "/etc/varnish/default.vcl" ]; then
         printf "%s1. Cai dat Varnish Cache%s\n" "${GREEN}" "${NC}"
+        printf "%s0. Thoat%s\n" "${GREEN}" "${NC}"
         printf "%s=====================================%s\n" "${GREEN}" "${NC}"
         read -r -p " ${SELECT_OPTION} " CHOICE
         if [ -z "${CHOICE}" ]
@@ -42,21 +42,23 @@ do
             0) clear; menu_cache ;;
             *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
         esac
-    else
-        printf "%s1. Bat/Tat Varnish Cache%s\n" "${GREEN}" "${NC}"
+    else        printf "%s1. Bat/Tat Varnish Cache%s\n" "${GREEN}" "${NC}"
         printf "%s2. Cai dat lai Varnish Cache%s\n" "${GREEN}" "${NC}"
         printf "%s3. Go bo Varnish Cache%s\n" "${GREEN}" "${NC}"
         printf "%s4. Quan ly domain%s\n" "${GREEN}" "${NC}"
         printf "%s5. Purge cache%s\n" "${GREEN}" "${NC}"
-        printf "%s6. Xem thong ke%s\n" "${GREEN}" "${NC}"
+        printf "%s6. Xem thong ke%s\n" "${GREEN}" "${NC}"        
         printf "%s7. Cau hinh nang cao%s\n" "${GREEN}" "${NC}"
+        printf "%s8. Test cau hinh%s\n" "${GREEN}" "${NC}"
+        printf "%s0. Thoat%s\n" "${GREEN}" "${NC}"
         printf "%s=====================================%s\n" "${GREEN}" "${NC}"
         read -r -p " ${SELECT_OPTION} " CHOICE
         if [ -z "${CHOICE}" ]
         then
             CHOICE=1
             continue
-        fi        case ${CHOICE} in
+        fi
+        case ${CHOICE} in
             1) clear; cache_varnish_service ;;
             2) clear; cache_reinstall_varnish_new ;;
             3) clear; cache_remove_varnish ;;
@@ -64,6 +66,7 @@ do
             5) clear; cache_varnish_purge ;;
             6) clear; cache_varnish_stats ;;
             7) clear; cache_varnish_config ;;
+            8) clear; cache_test_varnish_config ;;
             0) clear; menu_cache ;;
             *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
         esac

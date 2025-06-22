@@ -258,7 +258,7 @@ Type=notify
 NotifyAccess=all
 User=varnish
 Group=varnish
-ExecStart=/usr/sbin/varnishd -F -a :80 -T 127.0.0.1:6082 -f /etc/varnish/default.vcl -S /etc/varnish/secret -s malloc,${MAX_MEMORY}M
+ExecStart=/usr/sbin/varnishd -F -a :6081 -T 127.0.0.1:6082 -f /etc/varnish/default.vcl -S /etc/varnish/secret -s malloc,${MAX_MEMORY}M
 ExecReload=/bin/kill -HUP \$MAINPID
 KillMode=mixed
 Restart=on-failure
@@ -312,6 +312,55 @@ EOnginx_backend
     # Enable the backend site
     if [ ! -f "/etc/nginx/sites-enabled/backend" ]; then
         ln -s /etc/nginx/sites-available/backend /etc/nginx/sites-enabled/backend
+    fi
+}
+
+_configure_nginx_frontend(){
+    # Create nginx frontend configuration for SSL termination
+    cat > "/etc/nginx/sites-available/varnish-frontend" << EOnginx_frontend
+# HTTP to HTTPS redirect
+server {
+    listen 80 default_server;
+    server_name _;
+    return 301 https://\$server_name\$request_uri;
+}
+
+# SSL Termination - Forward to Varnish
+server {
+    listen 443 ssl http2 default_server;
+    server_name _;
+    
+    # SSL Configuration
+    ssl_certificate /etc/nginx/ssl/default.crt;
+    ssl_certificate_key /etc/nginx/ssl/default.key;
+    
+    # Forward to Varnish
+    location / {
+        proxy_pass http://127.0.0.1:6081;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+}
+EOnginx_frontend
+
+    # Enable frontend configuration
+    if [ ! -f "/etc/nginx/sites-enabled/varnish-frontend" ]; then
+        ln -s /etc/nginx/sites-available/varnish-frontend /etc/nginx/sites-enabled/varnish-frontend
+    fi
+    
+    # Create default SSL certificate if not exists
+    if [ ! -f "/etc/nginx/ssl/default.crt" ]; then
+        mkdir -p /etc/nginx/ssl
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/nginx/ssl/default.key \
+            -out /etc/nginx/ssl/default.crt \
+            -subj "/C=VN/ST=Vietnam/L=HoChiMinh/O=LEMP/CN=default.local"
     fi
 }
 
@@ -478,6 +527,44 @@ location ^~ /varnish {
 EOvarnish_app
 }
 
+_migrate_existing_domains(){
+    printf "%s\n" "${YELLOW}Dang chuyen doi cau hinh domain hien tai...${NC}"
+    
+    # Backup existing vhost configs
+    if [ -d "${VHOST_DIR}" ]; then
+        mkdir -p "${BACKUP_VHOST_DIR}/before-varnish-$(date +%Y%m%d-%H%M%S)"
+        cp -r "${VHOST_DIR}"/* "${BACKUP_VHOST_DIR}/before-varnish-$(date +%Y%m%d-%H%M%S)/" 2>/dev/null || true
+    fi
+    
+    # Find and modify existing domain configs
+    for vhost_file in "${VHOST_DIR}"/*.conf; do
+        if [ -f "$vhost_file" ]; then
+            domain_name=$(basename "$vhost_file" .conf)
+            
+            # Skip if this is our special configs
+            if [[ "$domain_name" == "backend" || "$domain_name" == "varnish-frontend" || "$domain_name" == "default" ]]; then
+                continue
+            fi
+            
+            printf "%s\n" "  - Chuyen doi domain: $domain_name"
+            
+            # Change listen 80 to listen 8080 for backend processing
+            sed -i 's/listen 80;/listen 8080;/g' "$vhost_file"
+            sed -i 's/listen 80 /listen 8080 /g' "$vhost_file"
+            
+            # Remove default_server from domain configs (will be handled by frontend)
+            sed -i 's/listen 8080 default_server;/listen 8080;/g' "$vhost_file"
+            
+            # Add comment to indicate this is backend config
+            if ! grep -q "# Varnish Backend Configuration" "$vhost_file"; then
+                sed -i '1i# Varnish Backend Configuration - Listen on port 8080' "$vhost_file"
+            fi
+        fi
+    done
+    
+    printf "%s\n" "${GREEN}Hoan tat chuyen doi cau hinh domain.${NC}"
+}
+
 if service_running "redis"; then
     printf "${RED}%s${NC}\n" "Redis Cache dang hoat dong. Varnish co the xung dot voi Redis."
     printf "${YELLOW}%s${NC}\n" "Ban co the tiep tuc nhung can dam bao cau hinh dung."
@@ -489,25 +576,46 @@ if service_running "varnish"; then
     printf "${GREEN}%s${NC}\n" "Varnish da ton tai tren VPS."
 else
     _set_var
-    _confirm
-
-    if [[ "${prompt_varnish}" =~ ^([yY])$ ]]; then
+    _confirm    if [[ "${prompt_varnish}" =~ ^([yY])$ ]]; then
         _backup_nginx_config
         _install_varnish
         _create_varnish_config
         _configure_nginx_backend
+        _configure_nginx_frontend
+        _migrate_existing_domains
         _install_varnish_admin
         _create_varnish_nginx_app
         
-        clear
-        if service_running "varnish"; then
-            notify_install_varnish="Cai dat Varnish Cache thanh cong."
-            printf "%s\n" "${GREEN}${notify_install_varnish}${NC}"
-            printf "%s\n" "${GREEN}Truy cap /varnish de quan ly cache.${NC}"
-            printf "%s\n" "${YELLOW}Luu y: Ban can cau hinh domain de su dung Varnish.${NC}"
+        # Test nginx configuration
+        printf "%s\n" "${YELLOW}Kiem tra cau hinh Nginx...${NC}"
+        nginx -t
+        if [ $? -eq 0 ]; then
+            printf "%s\n" "${GREEN}Cau hinh Nginx hop le.${NC}"
+            systemctl reload nginx
+            
+            # Start Varnish
+            printf "%s\n" "${YELLOW}Khoi dong Varnish Cache...${NC}"
+            systemctl enable varnish
+            systemctl start varnish
+            
+            clear
+            if service_running "varnish"; then
+                notify_install_varnish="Cai dat Varnish Cache thanh cong."
+                printf "%s\n" "${GREEN}${notify_install_varnish}${NC}"
+                printf "%s\n" "${GREEN}Truy cap /varnish de quan ly cache.${NC}"
+                printf "%s\n" "${YELLOW}Luu y: Tat ca domain da duoc tu dong chuyen doi.${NC}"
+                printf "%s\n" "${YELLOW}Kien truc: Nginx SSL (443) → Varnish (6081) → Nginx Backend (8080)${NC}"
+            else
+                notify_install_varnish="Cai dat Varnish Cache that bai hoac Varnish khong hoat dong."
+                printf "%s\n" "${RED}${notify_install_varnish}${NC}"
+                printf "%s\n" "${RED}Kiem tra log: journalctl -u varnish -f${NC}"
+            fi
         else
-            notify_install_varnish="Cai dat Varnish Cache that bai hoac Varnish khong hoat dong."
-            printf "%s\n" "${RED}${notify_install_varnish}${NC}"
+            printf "%s\n" "${RED}Loi cau hinh Nginx! Khong the khoi dong Varnish.${NC}"
+            printf "%s\n" "${YELLOW}Rollback cau hinh...${NC}"
+            if [ -f "/etc/nginx/nginx.conf.pre-varnish" ]; then
+                cp /etc/nginx/nginx.conf.pre-varnish /etc/nginx/nginx.conf
+            fi
         fi
     else
         clear

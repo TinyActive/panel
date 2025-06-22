@@ -253,7 +253,7 @@ Documentation=https://www.varnish-cache.org/docs/
 After=network-online.target
 
 [Service]
-Type=notify
+Type=simple
 NotifyAccess=all
 User=varnish
 Group=varnish

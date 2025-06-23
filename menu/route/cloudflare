@@ -13,7 +13,6 @@
 # shellcheck disable=SC1091
 source /var/hostvn/menu/helpers/cloudflare_api
 source /var/hostvn/menu/validate/rule
-source /var/hostvn/menu/lang/vi # Load language file
 
 # Định nghĩa hàm check_domain để kiểm tra domain hợp lệ bằng script check_value
 check_domain() {
@@ -219,39 +218,993 @@ cloudflare_add_dns_record() {
     rm -f /tmp/cloudflare_dns_debug.log
     
     if ! _cloudflare_auth; then
+        echo "Authentication failed!"
+        return 1
+    fi
+    
+    echo "CF_EMAIL: ${CF_EMAIL}"
+    echo "CF_API_KEY: ${CF_API_KEY:0:10}..." # Only show first 10 chars
+    echo "CF_AUTH_METHOD: ${CF_AUTH_METHOD}"
+    
+    # Ensure CF_AUTH_METHOD is exported
+    export CF_AUTH_METHOD
+    
+    # Select domain
+    echo "Selecting domain..."
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+    local selection_exit_code=$?
+
+    echo "Domain selection exit code: ${selection_exit_code}"
+
+    if [[ ${selection_exit_code} -ne 0 ]]; then
+        echo "Failed to select domain"
+        echo "Debug log available at: /tmp/cloudflare_dns_debug.log"
+        echo ""
+        echo "Showing debug log content:"
+        if [[ -f /tmp/cloudflare_dns_debug.log ]]; then
+            cat /tmp/cloudflare_dns_debug.log
+        else
+            echo "No debug log found"
+        fi
         return 1
     fi
 
-    # Call the DNS management script
-    /var/hostvn/menu/controller/cloudflare/dns_management
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+    
+    echo "Selected domain: ${domain}"
+    echo "Zone ID: ${zone_id}"
+
+    # DNS Management Menu
+    local choice=1
+    while [ "${choice}" != "0" ]
+    do
+        clear
+        printf "%s\n" "${GREEN}${CLOUDFLARE_DNS_MENU_TITLE}${NC}"
+        printf "%s\n" "Domain: ${domain}"
+        printf "%s\n" "=================================================="
+        printf "%s\n" "1. ${CLOUDFLARE_DNS_LIST}"
+        printf "%s\n" "2. ${CLOUDFLARE_DNS_ADD}"
+        printf "%s\n" "0. ${BACK_OPTION}"
+        printf "%s\n" "=================================================="
+        read -r -p "${SELECT_OPTION}" choice
+        
+        if [ -z "${choice}" ]; then
+            choice=1
+            continue
+        fi
+        
+        echo "User selected choice: ${choice}"
+        
+        case ${choice} in
+            1) 
+                echo "Calling _cloudflare_list_dns_records..."
+                _cloudflare_list_dns_records "${domain}" "${zone_id}"
+                echo ""
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+            2) 
+                echo "Calling _cloudflare_add_single_dns_record..."
+                _cloudflare_add_single_dns_record "${domain}" "${zone_id}"
+                echo ""
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+            0) 
+                echo "Exiting DNS management..."
+                return 0
+                ;;
+            *) 
+                clear
+                printf "%s\n" "${RED}${WRONG_OPTION}${NC}"
+                sleep 2
+                choice=1
+                ;;
+        esac
+    done
 }
 
-cloudflare_management() {
-    clear
-    printf "=========================================================================\n"
-    printf "                       CLOUDFLARE MANAGEMENT                             \n"
-    printf "=========================================================================\n"
-    printf "1. Them domain vao CloudFlare\n"
-    printf "2. %s\n" "${CLOUDFLARE_MANAGE_DNS}"
-    printf "0. %s\n" "${BACK_OPTION}"
-    printf "=========================================================================\n"
-    read -r -p "${INPUT_SELECT}" CF_OPTION
+_cloudflare_list_dns_records() {
+    local domain=$1
+    local zone_id=$2
     
-    case "${CF_OPTION}" in
+    echo "Đang lấy danh sách bản ghi DNS cho domain: ${domain}"
+    echo "Zone ID: ${zone_id}"
+    echo "CF_EMAIL: ${CF_EMAIL}"
+    echo "CF_API_KEY: ${CF_API_KEY:0:10}..." # Only show first 10 chars for security
+    echo "CF_AUTH_METHOD: ${CF_AUTH_METHOD}"
+    echo ""
+    
+    local response
+    response=$(_get_dns_records "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+    
+    # Debug: Show response status
+    echo "API Response status:"
+    if [[ "${response}" == *'"success":true'* ]]; then
+        echo "✓ API call successful"
+    elif [[ "${response}" == *'"success":false'* ]]; then
+        echo "✗ API call failed"
+        local error_msg=$(echo "${response}" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
+        echo "Error: ${error_msg}"
+        echo ""
+        echo "Full response saved to: /tmp/cloudflare_dns_debug.log"
+        return 1
+    else
+        echo "⚠ Unknown response format"
+        echo "Response preview: ${response:0:200}..."
+        echo ""
+        echo "Full response saved to: /tmp/cloudflare_dns_debug.log"
+        return 1
+    fi
+    
+    # Parse and filter A and AAAA records only
+    local records
+    echo "Đang parse bản ghi DNS..."
+    
+    # Try using jq first, fallback to custom parser
+    if command -v jq >/dev/null 2>&1; then
+        echo "Sử dụng jq để parse JSON"
+        records=$(echo "${response}" | jq -r '.result[] | select(.type == "A" or .type == "AAAA") | "\(.id)|\(.type)|\(.name)|\(.content)|\(.proxied)|\(.ttl)"' 2>/dev/null)
+    else
+        echo "Sử dụng custom parser để parse JSON"
+        records=$(_parse_json_array "${response}")
+    fi
+    
+    echo "Số lượng bản ghi tìm thấy: $(echo "${records}" | wc -l)"
+    
+    if [[ -z "${records}" ]]; then
+        echo "${CLOUDFLARE_DNS_NO_RECORDS}"
+        echo ""
+        echo "Debug info:"
+        echo "- Response contains result: $(echo "${response}" | grep -c '"result"')"
+        echo "- Response contains A records: $(echo "${response}" | grep -c '"type":"A"')"
+        echo "- Response contains AAAA records: $(echo "${response}" | grep -c '"type":"AAAA"')"
+        return 0
+    fi
+    
+    clear
+    printf "%s\n" "${GREEN}${CLOUDFLARE_DNS_LIST} - ${domain}${NC}"
+    echo ""
+    printf "%s\n" "${CLOUDFLARE_DNS_TABLE_HEADER}"
+    printf "%s\n" "${CLOUDFLARE_DNS_TABLE_SEPARATOR}"
+    
+    local count=1
+    echo "${records}" | while IFS='|' read -r id type name content proxied ttl; do
+        local proxy_status="${CLOUDFLARE_DNS_NOT_PROXIED}"
+        if [[ "${proxied}" == "true" ]]; then
+            proxy_status="${CLOUDFLARE_DNS_PROXIED}"
+        fi
+        
+        local ttl_display="${ttl}"
+        if [[ "${ttl}" == "1" ]]; then
+            ttl_display="${CLOUDFLARE_DNS_AUTO}"
+        fi
+        
+        # Truncate long names and content for display
+        local display_name="${name}"
+        local display_content="${content}"
+        
+        if [[ ${#display_name} -gt 22 ]]; then
+            display_name="${display_name:0:19}..."
+        fi
+        
+        if [[ ${#display_content} -gt 19 ]]; then
+            display_content="${display_content:0:16}..."
+        fi
+        
+        printf "| %-3s | %-5s | %-22s | %-19s | %-5s | %-4s |\n" \
+            "${count}" "${type}" "${display_name}" "${display_content}" "${proxy_status}" "${ttl_display}"
+        ((count++))
+    done
+    
+    echo ""
+    echo "${CLOUDFLARE_DNS_SELECT_RECORD}"
+    echo "1. ${CLOUDFLARE_DNS_EDIT}"
+    echo "2. ${CLOUDFLARE_DNS_DELETE}"
+    echo "0. ${CLOUDFLARE_DNS_BACK_TO_LIST}"
+    
+    local action_choice
+    read -r -p "${SELECT_OPTION}" action_choice
+    
+    if [[ "${action_choice}" == "0" ]]; then
+        return 0
+    fi
+    
+    echo "Nhập số thứ tự bản ghi:"
+    local record_number
+    read -r record_number
+    
+    if ! [[ "${record_number}" =~ ^[0-9]+$ ]] || [[ "${record_number}" -lt 1 ]]; then
+        echo "${WRONG_SELECT}"
+        return 1
+    fi
+    
+    # Get the selected record
+    local selected_record
+    selected_record=$(echo "${records}" | sed -n "${record_number}p")
+    
+    if [[ -z "${selected_record}" ]]; then
+        echo "${WRONG_SELECT}"
+        return 1
+    fi
+    
+    local record_id record_type record_name record_content record_proxied record_ttl
+    IFS='|' read -r record_id record_type record_name record_content record_proxied record_ttl <<< "${selected_record}"
+    
+    echo "Đã chọn bản ghi: ${record_type} ${record_name} -> ${record_content}"
+    
+    case ${action_choice} in
         1)
-            cloudflare_add_domain
+            _cloudflare_edit_dns_record "${domain}" "${zone_id}" "${record_id}" "${record_type}" "${record_name}" "${record_content}" "${record_proxied}"
             ;;
         2)
-            cloudflare_add_dns_record
-            ;;
-        0)
-            . /var/hostvn/menu/menu_tools
+            _cloudflare_delete_dns_record "${domain}" "${zone_id}" "${record_id}" "${record_name}" "${record_content}"
             ;;
         *)
-            cloudflare_management
+            echo "${WRONG_SELECT}"
             ;;
     esac
-    cloudflare_management
 }
 
-cloudflare_management
+_cloudflare_add_single_dns_record() {
+    local domain=$1
+    local zone_id=$2
+    
+    echo "=== DEBUG: Adding single DNS record ==="
+    echo "Domain: ${domain}"
+    echo "Zone ID: ${zone_id}"
+    echo ""
+    
+    echo "${CLOUDFLARE_DNS_ADD}"
+    echo ""
+    
+    # Select record type
+    echo "Chọn loại bản ghi:"
+    echo "1. A (IPv4)"
+    echo "2. AAAA (IPv6)"
+    local type_choice
+    read -r -p "${SELECT_OPTION}" type_choice
+    
+    echo "User selected type choice: ${type_choice}"
+    
+    local record_type
+    case ${type_choice} in
+        1) record_type="A" ;;
+        2) record_type="AAAA" ;;
+        *) echo "${WRONG_SELECT}"; return 1 ;;
+    esac
+    
+    echo "Record type: ${record_type}"
+    
+    # Get record name
+    echo "${CLOUDFLARE_DNS_ENTER_NAME}"
+    echo "(${CLOUDFLARE_SUBDOMAIN_HINT})"
+    local subdomain
+    read -r subdomain
+    
+    echo "User entered subdomain: '${subdomain}'"
+    
+    local record_name
+    if [[ -z "${subdomain}" || "${subdomain}" == "@" ]]; then
+        record_name="${domain}"
+    else
+        record_name="${subdomain}.${domain}"
+    fi
+    
+    echo "Final record name: ${record_name}"
+    
+    # Get IP address
+    echo "${CLOUDFLARE_DNS_ENTER_IP}"
+    local ip_address
+    read -r ip_address
+    
+    echo "User entered IP: ${ip_address}"
+    
+    # Validate IP address
+    if [[ "${record_type}" == "A" ]]; then
+        if ! [[ "${ip_address}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "Địa chỉ IPv4 không hợp lệ"
+            return 1
+        fi
+        echo "IPv4 validation passed"
+    elif [[ "${record_type}" == "AAAA" ]]; then
+        if ! [[ "${ip_address}" =~ ^[0-9a-fA-F:]+$ ]]; then
+            echo "Địa chỉ IPv6 không hợp lệ"
+            return 1
+        fi
+        echo "IPv6 validation passed"
+    fi
+    
+    # Ask about proxy (only for A records)
+    local proxied="false"
+    if [[ "${record_type}" == "A" ]]; then
+        echo "${CLOUDFLARE_PROXY} (y/n)"
+        local proxy_choice
+        read -r proxy_choice
+        echo "User proxy choice: ${proxy_choice}"
+        if [[ "${proxy_choice}" == "y" || "${proxy_choice}" == "Y" ]]; then
+            proxied="true"
+        fi
+    fi
+    
+    echo "Proxied setting: ${proxied}"
+    
+    # Confirm
+    echo ""
+    echo "${CLOUDFLARE_CONFIRM_DNS_RECORD}"
+    echo "- ${CLOUDFLARE_DNS_TYPE}: ${record_type}"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${ip_address}"
+    echo "- ${CLOUDFLARE_DNS_PROXY_STATUS}: ${proxied}"
+    echo ""
+    
+    echo "${CLOUDFLARE_CONFIRM_PROCEED} (y/n)"
+    local confirm
+    read -r confirm
+    
+    echo "User confirmation: ${confirm}"
+    
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "${CLOUDFLARE_OPERATION_CANCELLED}"
+        return 0
+    fi
+    
+    # Add DNS record
+    echo "${PROCESSING}"
+    echo "Calling _add_dns_record with parameters:"
+    echo "- Email: ${CF_EMAIL}"
+    echo "- API Key: ${CF_API_KEY:0:10}..."
+    echo "- Zone ID: ${zone_id}"
+    echo "- Type: ${record_type}"
+    echo "- Name: ${record_name}"
+    echo "- Content: ${ip_address}"
+    echo "- Proxied: ${proxied}"
+    
+    local result
+    result=$(_add_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${record_type}" "${record_name}" "${ip_address}" "${proxied}")
+    
+    echo "API result: ${result}"
+    
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "Lỗi: ${error}"
+    else
+        echo "${CLOUDFLARE_RECORD_ADDED}"
+    fi
+}
+
+_cloudflare_edit_dns_record() {
+    local domain=$1
+    local zone_id=$2
+    local record_id=$3
+    local record_type=$4
+    local record_name=$5
+    local record_content=$6
+    local record_proxied=$7
+    
+    echo "${CLOUDFLARE_DNS_EDIT}"
+    echo ""
+    echo "Bản ghi hiện tại:"
+    echo "- ${CLOUDFLARE_DNS_TYPE}: ${record_type}"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${record_content}"
+    echo "- ${CLOUDFLARE_DNS_PROXY_STATUS}: ${record_proxied}"
+    echo ""
+    
+    # Get new IP address
+    echo "Nhập địa chỉ IP mới (Enter để giữ nguyên: ${record_content}):"
+    local new_content
+    read -r new_content
+    
+    if [[ -z "${new_content}" ]]; then
+        new_content="${record_content}"
+    fi
+    
+    # Validate IP address
+    if [[ "${record_type}" == "A" ]]; then
+        if ! [[ "${new_content}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "Địa chỉ IPv4 không hợp lệ"
+            return 1
+        fi
+    elif [[ "${record_type}" == "AAAA" ]]; then
+        if ! [[ "${new_content}" =~ ^[0-9a-fA-F:]+$ ]]; then
+            echo "Địa chỉ IPv6 không hợp lệ"
+            return 1
+        fi
+    fi
+    
+    # Ask about proxy (only for A records)
+    local new_proxied="${record_proxied}"
+    if [[ "${record_type}" == "A" ]]; then
+        echo "${CLOUDFLARE_PROXY} (y/n, Enter để giữ nguyên: ${record_proxied}):"
+        local proxy_choice
+        read -r proxy_choice
+        if [[ "${proxy_choice}" == "y" || "${proxy_choice}" == "Y" ]]; then
+            new_proxied="true"
+        elif [[ "${proxy_choice}" == "n" || "${proxy_choice}" == "N" ]]; then
+            new_proxied="false"
+        fi
+    fi
+    
+    # Confirm
+    echo ""
+    echo "Xác nhận cập nhật bản ghi:"
+    echo "- ${CLOUDFLARE_DNS_TYPE}: ${record_type}"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${new_content}"
+    echo "- ${CLOUDFLARE_DNS_PROXY_STATUS}: ${new_proxied}"
+    echo ""
+    
+    echo "${CLOUDFLARE_CONFIRM_PROCEED} (y/n)"
+    local confirm
+    read -r confirm
+    
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "${CLOUDFLARE_OPERATION_CANCELLED}"
+        return 0
+    fi
+    
+    # Update DNS record
+    echo "${PROCESSING}"
+    local result
+    result=$(_update_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${record_id}" "${record_type}" "${record_name}" "${new_content}" "${new_proxied}")
+    
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "Lỗi: ${error}"
+    else
+        echo "${CLOUDFLARE_DNS_RECORD_UPDATED}"
+    fi
+}
+
+_cloudflare_delete_dns_record() {
+    local domain=$1
+    local zone_id=$2
+    local record_id=$3
+    local record_name=$4
+    local record_content=$5
+    
+    echo "${CLOUDFLARE_DNS_DELETE}"
+    echo ""
+    echo "Bản ghi sẽ bị xóa:"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${record_content}"
+    echo ""
+    
+    echo "${CLOUDFLARE_DNS_CONFIRM_DELETE} (y/n)"
+    local confirm
+    read -r confirm
+    
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "${CLOUDFLARE_OPERATION_CANCELLED}"
+        return 0
+    fi
+    
+    # Delete DNS record
+    echo "${PROCESSING}"
+    local result
+    result=$(_delete_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${record_id}")
+    
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "Lỗi: ${error}"
+    else
+        echo "${CLOUDFLARE_DNS_RECORD_DELETED}"
+    fi
+}
+
+cloudflare_block_ip() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Get IP to block
+    echo "${CLOUDFLARE_ENTER_IP}"
+    local ip_address
+    read -r ip_address
+
+    # Create security rule to block IP
+    local rule_name="Block IP ${ip_address}"
+    local expression="(ip.src eq ${ip_address})"
+    local result
+    result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_IP_BLOCKED}"
+    fi
+}
+
+cloudflare_block_country() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Get country code to block
+    echo "${CLOUDFLARE_ENTER_COUNTRY}"
+    local country_code
+    read -r country_code
+
+    # Create security rule to block country
+    local rule_name="Block Country ${country_code}"
+    local expression="(ip.geoip.country eq \"${country_code}\")"
+    local result
+    result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_COUNTRY_BLOCKED}"
+    fi
+}
+
+cloudflare_manage_cache_settings() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    echo "${CLOUDFLARE_CACHE_MANAGEMENT}"
+    echo "1. ${CLOUDFLARE_CACHE_RESERVE} (on/off)"
+    echo "2. ${CLOUDFLARE_TIERED_CACHE} (on/off)"
+    echo "3. ${CLOUDFLARE_PURGE_CACHE}"
+    echo "${SELECT_OPTION}"
+    
+    local selection
+    read -r selection
+
+    case ${selection} in
+        1)
+            echo "Enable Cache Reserve? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_cache_settings "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "cache_reserve" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "Cache Reserve setting updated."
+            fi
+            ;;
+        2)
+            echo "Enable Tiered Cache? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_cache_settings "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "tiered_caching" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "Tiered Cache setting updated."
+            fi
+            ;;
+        3)
+            local result
+            result=$(_purge_cache "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "${CLOUDFLARE_CACHE_PURGED}"
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "${WRONG_SELECT}"
+            ;;
+    esac
+}
+
+cloudflare_block_ai_bots() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Create rule to block AI bots
+    local result
+    result=$(_create_bot_management_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_AI_BLOCKED}"
+    fi
+}
+
+cloudflare_enable_email_routing() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Enable email routing
+    local result
+    result=$(_enable_email_routing "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_EMAIL_ENABLED}"
+    fi
+}
+
+cloudflare_create_turnstile() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Create Turnstile
+    local result
+    result=$(_create_turnstile "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${domain}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        local site_key
+        local secret_key
+        site_key=$(echo "${result}" | cut -d':' -f2)
+        secret_key=$(echo "${result}" | cut -d':' -f3)
+        echo "${CLOUDFLARE_TURNSTILE_CREATED}"
+        echo "Site Key: ${site_key}"
+        echo "Secret Key: ${secret_key}"
+        echo "Please save these keys for future use."
+    fi
+}
+
+cloudflare_manage_security_modes() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    echo "1. ${CLOUDFLARE_ATTACK_MODE} (on/off)"
+    echo "2. ${CLOUDFLARE_DEVELOPMENT_MODE} (on/off)"
+    echo "${SELECT_OPTION}"
+    
+    local selection
+    read -r selection
+
+    case ${selection} in
+        1)
+            echo "Enable Under Attack Mode? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_security_mode "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "under_attack" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                if [[ "${value}" == "on" ]]; then
+                    echo "${CLOUDFLARE_MODE_ENABLED}"
+                else
+                    echo "${CLOUDFLARE_MODE_DISABLED}"
+                fi
+            fi
+            ;;
+        2)
+            echo "Enable Development Mode? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_security_mode "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "development" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                if [[ "${value}" == "on" ]]; then
+                    echo "${CLOUDFLARE_MODE_ENABLED}"
+                else
+                    echo "${CLOUDFLARE_MODE_DISABLED}"
+                fi
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "${WRONG_SELECT}"
+            ;;
+    esac
+}
+
+cloudflare_account_management() {
+    # Check if already connected
+    local is_connected="false"
+    local account_name=""
+    local account_email=""
+    local auth_type=""
+    local connected_at=""
+    
+    if _load_cloudflare_config; then
+        is_connected="true"
+        account_email="${CF_EMAIL}"
+        if [[ "${CF_AUTH_METHOD}" == "token" ]]; then
+            auth_type="${CLOUDFLARE_AUTH_TOKEN}"
+        else
+            auth_type="${CLOUDFLARE_AUTH_KEY}"
+        fi
+        connected_at="${CF_CONNECTED_AT}"
+        
+        # Get account info
+        local account_info
+        account_info=$(_get_cloudflare_account_info "${CF_EMAIL}" "${CF_API_KEY}" "${CF_AUTH_METHOD}")
+        
+        if [[ "$(echo "${account_info}" | grep -o '"success":true')" ]]; then
+            account_name=$(echo "${account_info}" | grep -o '"name":"[^"]*' | head -n1 | cut -d'"' -f4)
+        fi
+    fi
+    
+    clear
+    printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+    printf "%s      %s Scripts - Cloudflare Account Manager      %s\n" "${GREEN}" "${AUTHOR}" "${NC}"
+    printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+    
+    if [[ "${is_connected}" == "true" ]]; then
+        echo ""
+        echo "${CLOUDFLARE_ACCOUNT_CONNECTED}"
+        echo "- ${CLOUDFLARE_ACCOUNT_NAME}: ${account_name}"
+        echo "- ${CLOUDFLARE_ACCOUNT_EMAIL}: ${account_email}"
+        echo "- ${CLOUDFLARE_AUTH_TYPE}: ${auth_type}"
+        echo "- ${CLOUDFLARE_CONNECTED_AT}: ${connected_at}"
+        echo ""
+        echo "1. ${CLOUDFLARE_DISCONNECT}"
+        echo "2. ${CLOUDFLARE_RECONNECT}"
+        echo "0. ${BACK_OPTION}"
+        echo ""
+        echo "${SELECT_OPTION}"
+        
+        local choice
+        read -r choice
+        
+        case ${choice} in
+            1)
+                if [[ -f "${CF_CONFIG_FILE}" ]]; then
+                    rm -f "${CF_CONFIG_FILE}"
+                    echo "${CLOUDFLARE_DISCONNECTED}"
+                    sleep 2
+                fi
+                ;;
+            2)
+                _cloudflare_auth "true"
+                if [[ $? -eq 0 ]]; then
+                    echo "${CLOUDFLARE_RECONNECTED}"
+                    sleep 2
+                fi
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "${WRONG_OPTION}"
+                sleep 2
+                ;;
+        esac
+    else
+        echo ""
+        echo "${CLOUDFLARE_NOT_CONNECTED}"
+        echo ""
+        echo "1. ${CLOUDFLARE_CONNECT}"
+        echo "0. ${BACK_OPTION}"
+        echo ""
+        echo "${SELECT_OPTION}"
+        
+        local choice
+        read -r choice
+        
+        case ${choice} in
+            1)
+                _cloudflare_auth
+                if [[ $? -eq 0 ]]; then
+                    echo "${CLOUDFLARE_CONNECTED}"
+                    sleep 2
+                fi
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "${WRONG_OPTION}"
+                sleep 2
+                ;;
+        esac
+    fi
+}
+
+cloudflare_security_menu() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    echo "${CLOUDFLARE_SECURITY}"
+    echo "1. ${CLOUDFLARE_BLOCK_IP}"
+    echo "2. ${CLOUDFLARE_BLOCK_COUNTRY}"
+    echo "${SELECT_OPTION}"
+    
+    local selection
+    read -r selection
+
+    case ${selection} in
+        1)
+            # Get IP to block
+            echo "${CLOUDFLARE_ENTER_IP}"
+            local ip_address
+            read -r ip_address
+
+            # Create security rule to block IP
+            local rule_name="Block IP ${ip_address}"
+            local expression="(ip.src eq ${ip_address})"
+            local result
+            result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "${CLOUDFLARE_IP_BLOCKED}"
+            fi
+            ;;
+        2)
+            # Get country code to block
+            echo "${CLOUDFLARE_ENTER_COUNTRY}"
+            local country_code
+            read -r country_code
+
+            # Create security rule to block country
+            local rule_name="Block Country ${country_code}"
+            local expression="(ip.geoip.country eq \"${country_code}\")"
+            local result
+            result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "${CLOUDFLARE_COUNTRY_BLOCKED}"
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "${WRONG_SELECT}"
+            ;;
+    esac
+}

@@ -32,7 +32,8 @@ do
     printf "${GREEN}%s${NC}\n" "6. ${CLOUDFLARE_BLOCK_AI}"
     printf "${GREEN}%s${NC}\n" "7. ${CLOUDFLARE_EMAIL_ROUTING}"
     printf "${GREEN}%s${NC}\n" "8. ${CLOUDFLARE_TURNSTILE}"
-    printf "${GREEN}%s${NC}\n" "9. ${CLOUDFLARE_ATTACK_MODE} & ${CLOUDFLARE_DEVELOPMENT_MODE}"    printf "${GREEN}%s${NC}\n" "=================================================="
+    printf "${GREEN}%s${NC}\n" "9. ${CLOUDFLARE_ATTACK_MODE} & ${CLOUDFLARE_DEVELOPMENT_MODE}"   
+    printf "${GREEN}%s${NC}\n" "=================================================="
     read -r -p " ${SELECT_OPTION} " CHOICE
     if [ -z "${CHOICE}" ]
     then

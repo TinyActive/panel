@@ -14,6 +14,11 @@
 source /var/hostvn/menu/helpers/cloudflare_api
 source /var/hostvn/menu/validate/rule
 
+# Định nghĩa hàm check_domain để kiểm tra domain hợp lệ bằng script check_value
+check_domain() {
+    /var/hostvn/menu/validate/check_value domain "$1"
+}
+
 _cloudflare_auth() {
     local cf_email
     local cf_api_key

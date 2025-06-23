@@ -48,38 +48,48 @@ _load_cloudflare_config() {
 _validate_api_key() {
     local cf_email=$1
     local cf_api_key=$2
-    
-    # Make API call to verify token
+    local is_token=0
+    # Nếu key chứa dấu chấm hoặc dài hơn 40 ký tự thì coi là API Token
+    if [[ "${cf_api_key}" == *.* || ${#cf_api_key} -gt 40 ]]; then
+        is_token=1
+    fi
     local response
-    response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
-        -H "X-Auth-Email: ${cf_email}" \
-        -H "X-Auth-Key: ${cf_api_key}" \
-        -H "Content-Type: application/json")
-
-    # For debugging - save response to a log file
-    echo "${response}" > "/tmp/cloudflare_api_debug.log"
-
-    # Check if the API call was successful
-    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
-        return 0
-    else
-        # Try alternative authentication method (API Token)
-        local token_response
-        token_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+    if [[ $is_token -eq 1 ]]; then
+        # Xác thực API Token
+        response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
             -H "Authorization: Bearer ${cf_api_key}" \
             -H "Content-Type: application/json")
-        
-        echo "${token_response}" >> "/tmp/cloudflare_api_debug.log"
-        
-        if [[ "$(echo "${token_response}" | grep -o '"success":true')" ]]; then
-            # If token method works, we're using an API Token instead of Global API Key
-            # Set a flag in the config file
-            CF_AUTH_METHOD="token"
+        echo "${response}" > "/tmp/cloudflare_api_debug.log"
+        if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+            export CF_AUTH_METHOD="token"
             return 0
         else
-            # Extract error message for debugging
+            echo "\n[Cloudflare] Lỗi xác thực API Token!\n" >&2
+            echo "- API Token không hợp lệ hoặc không đủ quyền." >&2
+            echo "- Vào Cloudflare Dashboard > API Tokens > Create Token hoặc View, đảm bảo token có quyền quản lý zone." >&2
+            echo "- Nếu đã đúng mà vẫn lỗi, kiểm tra lại quyền hoặc thử tạo token mới." >&2
             local error_message
-            error_message=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+            error_message=$(echo "${response}" | grep -o '"message":"[^\"]*' | cut -d'"' -f4)
+            echo "Authentication Error: ${error_message}" >> "/tmp/cloudflare_api_debug.log"
+            return 1
+        fi
+    else
+        # Xác thực Global API Key
+        response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json")
+        echo "${response}" > "/tmp/cloudflare_api_debug.log"
+        if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+            export CF_AUTH_METHOD="key"
+            return 0
+        else
+            echo "\n[Cloudflare] Lỗi xác thực Global API Key!\n" >&2
+            echo "- API Key không hợp lệ hoặc không đủ quyền." >&2
+            echo "- Vào Cloudflare Dashboard > My Profile > API Tokens > Global API Key > View để lấy key dài (~37 ký tự)." >&2
+            echo "- Nếu đã đúng mà vẫn lỗi, kiểm tra lại quyền hoặc thử tạo key mới." >&2
+            local error_message
+            error_message=$(echo "${response}" | grep -o '"message":"[^\"]*' | cut -d'"' -f4)
             echo "Authentication Error: ${error_message}" >> "/tmp/cloudflare_api_debug.log"
             return 1
         fi
@@ -131,23 +141,36 @@ _add_domain_to_cloudflare() {
     local cf_email=$1
     local cf_api_key=$2
     local domain=$3
+    local auth_method=${CF_AUTH_METHOD:-key}
     
     # Add domain to Cloudflare
     local response
-    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones" \
-        -H "X-Auth-Email: ${cf_email}" \
-        -H "X-Auth-Key: ${cf_api_key}" \
-        -H "Content-Type: application/json" \
-        --data "{\"name\":\"${domain}\",\"jump_start\":true}")
+    if [[ "${auth_method}" == "token" ]]; then
+        response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones" \
+            -H "Authorization: Bearer ${cf_api_key}" \
+            -H "Content-Type: application/json" \
+            --data "{\"name\":\"${domain}\",\"jump_start\":true}")
+    else
+        response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json" \
+            --data "{\"name\":\"${domain}\",\"jump_start\":true}")
+    fi
 
     # Check if the domain was added successfully
     if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
-        # Extract nameservers
-        local ns1=$(echo "${response}" | grep -o '"name_servers":\[[^]]*' | grep -o '"[^"]*"' | sed 's/"//g' | head -n1)
-        local ns2=$(echo "${response}" | grep -o '"name_servers":\[[^]]*' | grep -o '"[^"]*"' | sed 's/"//g' | head -n2 | tail -n1)
+        # Extract nameservers (improved, avoid lỗi chỉ lấy 1 NS)
+        local ns1 ns2
+        ns1=$(echo "${response}" | grep -o '"name_servers":\[[^]]*' | head -n1 | sed 's/.*\["\([^"]*\)".*/\1/')
+        ns2=$(echo "${response}" | grep -o '"name_servers":\[[^]]*' | head -n1 | sed 's/.*\["[^"]*",[ ]*"\([^"]*\)".*/\1/')
+        # Nếu không lấy được NS2 thì fallback về cách cũ
+        if [[ -z "$ns2" || "$ns2" == "$ns1" ]]; then
+            ns2=$(echo "${response}" | grep -o '"name_servers":\[[^]]*' | grep -o '"[^"]*"' | sed 's/"//g' | head -n2 | tail -n1)
+        fi
         echo "success:${ns1}:${ns2}"
     else
-        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        local error=$(echo "${response}" | grep -o '"message":"[^\"]*' | cut -d'"' -f4)
         echo "error:${error}"
     fi
 }

@@ -65,30 +65,81 @@ _select_cloudflare_domain() {
     local cf_api_key="$2"
     local zone_id=""
     
+    echo "=== DEBUG: Selecting Cloudflare domain ==="
+    echo "Email: ${cf_email}"
+    echo "API Key: ${cf_api_key:0:10}..."
+    echo "Auth Method: ${CF_AUTH_METHOD}"
+    echo ""
+    
     # Get Cloudflare zones
+    echo "Fetching zones from Cloudflare..."
     local zones_response
     zones_response=$(_get_cloudflare_zones "${cf_email}" "${cf_api_key}")
     
+    echo "Zones API response status:"
+    if [[ "${zones_response}" == *'"success":true'* ]]; then
+        echo "✓ Zones API call successful"
+    else
+        echo "✗ Zones API call failed"
+        echo "Response preview: ${zones_response:0:300}..."
+        echo "Full response saved to: /tmp/cloudflare_dns_debug.log"
+        return 1
+    fi
+    
     # Check if we have domains
-    if [[ "$(echo "${zones_response}" | grep -o '"success":true')" && "$(echo "${zones_response}" | grep -o '"count":[^,]*' | grep -o '[0-9]\+')" != "0" ]]; then
+    local domain_count
+    domain_count=$(echo "${zones_response}" | grep -o '"count":[^,]*' | grep -o '[0-9]\+')
+    echo "Domain count: ${domain_count}"
+    
+    if [[ "$(echo "${zones_response}" | grep -o '"success":true')" && "${domain_count}" != "0" && -n "${domain_count}" ]]; then
+        echo "Processing domains..."
+        
         # Extract domain names
         local domains
-        domains=$(echo "${zones_response}" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+        if command -v jq >/dev/null 2>&1; then
+            echo "Using jq to extract domains"
+            domains=$(echo "${zones_response}" | jq -r '.result[].name' 2>/dev/null)
+        else
+            echo "Using grep to extract domains"
+            domains=$(echo "${zones_response}" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+        fi
+        
+        echo "Extracted domains:"
+        echo "${domains}"
+        echo ""
+        
+        if [[ -z "${domains}" ]]; then
+            echo "No domains found in response"
+            return 1
+        fi
         
         # Create numbered list of domains
         echo "${CLOUDFLARE_SELECT_DOMAIN}"
         local i=1
-        while read -r domain; do
-            echo "${i}. ${domain}"
-            i=$((i + 1))
+        while IFS= read -r domain; do
+            if [[ -n "${domain}" ]]; then
+                echo "${i}. ${domain}"
+                i=$((i + 1))
+            fi
         done <<< "${domains}"
+        
+        echo "0. ${BACK_OPTION}"
+        echo ""
         
         # Ask user to select domain
         local selection
-        echo "${SELECT_OPTION}"
-        read -r selection
+        read -r -p "${SELECT_OPTION}" selection
+        
+        echo "User selected: ${selection}"
         
         if [[ "${selection}" == "0" ]]; then
+            echo "User chose to go back"
+            return 1
+        fi
+        
+        # Validate selection
+        if ! [[ "${selection}" =~ ^[0-9]+$ ]] || [[ "${selection}" -lt 1 ]]; then
+            echo "Invalid selection: ${selection}"
             return 1
         fi
         
@@ -96,17 +147,33 @@ _select_cloudflare_domain() {
         local selected_domain
         selected_domain=$(echo "${domains}" | sed -n "${selection}p")
         
+        echo "Selected domain: '${selected_domain}'"
+        
+        if [[ -z "${selected_domain}" ]]; then
+            echo "No domain found at position ${selection}"
+            return 1
+        fi
+        
         # Get zone ID for selected domain
+        echo "Getting zone ID for domain: ${selected_domain}"
         zone_id=$(_get_zone_id "${cf_email}" "${cf_api_key}" "${selected_domain}")
         
+        echo "Zone ID: ${zone_id}"
+        
         if [[ -n "${zone_id}" ]]; then
+            echo "Successfully got zone ID"
             echo "${selected_domain}:${zone_id}"
             return 0
         else
+            echo "Failed to get zone ID for domain: ${selected_domain}"
             return 1
         fi
     else
         echo "${CLOUDFLARE_NO_DOMAINS}"
+        echo "Debug info:"
+        echo "- Success field: $(echo "${zones_response}" | grep -o '"success":[^,]*')"
+        echo "- Count field: $(echo "${zones_response}" | grep -o '"count":[^,]*')"
+        echo "- Result field exists: $(echo "${zones_response}" | grep -c '"result"')"
         return 1
     fi
 }
@@ -144,13 +211,42 @@ cloudflare_add_domain() {
 }
 
 cloudflare_add_dns_record() {
-    _cloudflare_auth
-
+    echo "=== DEBUG: Bắt đầu quản lý DNS ==="
+    echo "Checking authentication..."
+    
+    # Clear previous debug logs
+    rm -f /tmp/cloudflare_dns_debug.log
+    
+    if ! _cloudflare_auth; then
+        echo "Authentication failed!"
+        return 1
+    fi
+    
+    echo "CF_EMAIL: ${CF_EMAIL}"
+    echo "CF_API_KEY: ${CF_API_KEY:0:10}..." # Only show first 10 chars
+    echo "CF_AUTH_METHOD: ${CF_AUTH_METHOD}"
+    
+    # Ensure CF_AUTH_METHOD is exported
+    export CF_AUTH_METHOD
+    
     # Select domain
+    echo "Selecting domain..."
     local result
     result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+    local selection_exit_code=$?
 
-    if [[ $? -ne 0 ]]; then
+    echo "Domain selection exit code: ${selection_exit_code}"
+
+    if [[ ${selection_exit_code} -ne 0 ]]; then
+        echo "Failed to select domain"
+        echo "Debug log available at: /tmp/cloudflare_dns_debug.log"
+        echo ""
+        echo "Showing debug log content:"
+        if [[ -f /tmp/cloudflare_dns_debug.log ]]; then
+            cat /tmp/cloudflare_dns_debug.log
+        else
+            echo "No debug log found"
+        fi
         return 1
     fi
 
@@ -158,6 +254,9 @@ cloudflare_add_dns_record() {
     local zone_id
     domain=$(echo "${result}" | cut -d':' -f1)
     zone_id=$(echo "${result}" | cut -d':' -f2)
+    
+    echo "Selected domain: ${domain}"
+    echo "Zone ID: ${zone_id}"
 
     # DNS Management Menu
     local choice=1
@@ -178,18 +277,23 @@ cloudflare_add_dns_record() {
             continue
         fi
         
+        echo "User selected choice: ${choice}"
+        
         case ${choice} in
             1) 
+                echo "Calling _cloudflare_list_dns_records..."
                 _cloudflare_list_dns_records "${domain}" "${zone_id}"
                 echo ""
                 read -p "Nhấn Enter để tiếp tục..."
                 ;;
             2) 
+                echo "Calling _cloudflare_add_single_dns_record..."
                 _cloudflare_add_single_dns_record "${domain}" "${zone_id}"
                 echo ""
                 read -p "Nhấn Enter để tiếp tục..."
                 ;;
             0) 
+                echo "Exiting DNS management..."
                 return 0
                 ;;
             *) 
@@ -205,29 +309,58 @@ cloudflare_add_dns_record() {
 _cloudflare_list_dns_records() {
     local domain=$1
     local zone_id=$2
-      echo "${PROCESSING}"
+    
+    echo "Đang lấy danh sách bản ghi DNS cho domain: ${domain}"
+    echo "Zone ID: ${zone_id}"
+    echo "CF_EMAIL: ${CF_EMAIL}"
+    echo "CF_API_KEY: ${CF_API_KEY:0:10}..." # Only show first 10 chars for security
+    echo "CF_AUTH_METHOD: ${CF_AUTH_METHOD}"
+    echo ""
+    
     local response
     response=$(_get_dns_records "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
     
-    # Check if API call was successful
-    if [[ -z "${response}" ]] || [[ "${response}" == *'"success":false'* ]]; then
-        echo "Lỗi: Không thể lấy danh sách bản ghi DNS"
-        if [[ "${response}" == *'"message"'* ]]; then
-            local error_msg=$(echo "${response}" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
-            echo "Chi tiết: ${error_msg}"
-        fi
+    # Debug: Show response status
+    echo "API Response status:"
+    if [[ "${response}" == *'"success":true'* ]]; then
+        echo "✓ API call successful"
+    elif [[ "${response}" == *'"success":false'* ]]; then
+        echo "✗ API call failed"
+        local error_msg=$(echo "${response}" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
+        echo "Error: ${error_msg}"
+        echo ""
+        echo "Full response saved to: /tmp/cloudflare_dns_debug.log"
+        return 1
+    else
+        echo "⚠ Unknown response format"
+        echo "Response preview: ${response:0:200}..."
+        echo ""
+        echo "Full response saved to: /tmp/cloudflare_dns_debug.log"
         return 1
     fi
-      # Parse and filter A and AAAA records only
+    
+    # Parse and filter A and AAAA records only
     local records
+    echo "Đang parse bản ghi DNS..."
+    
     # Try using jq first, fallback to custom parser
     if command -v jq >/dev/null 2>&1; then
+        echo "Sử dụng jq để parse JSON"
         records=$(echo "${response}" | jq -r '.result[] | select(.type == "A" or .type == "AAAA") | "\(.id)|\(.type)|\(.name)|\(.content)|\(.proxied)|\(.ttl)"' 2>/dev/null)
     else
+        echo "Sử dụng custom parser để parse JSON"
         records=$(_parse_json_array "${response}")
+    fi
+    
+    echo "Số lượng bản ghi tìm thấy: $(echo "${records}" | wc -l)"
     
     if [[ -z "${records}" ]]; then
         echo "${CLOUDFLARE_DNS_NO_RECORDS}"
+        echo ""
+        echo "Debug info:"
+        echo "- Response contains result: $(echo "${response}" | grep -c '"result"')"
+        echo "- Response contains A records: $(echo "${response}" | grep -c '"type":"A"')"
+        echo "- Response contains AAAA records: $(echo "${response}" | grep -c '"type":"AAAA"')"
         return 0
     fi
     
@@ -300,6 +433,8 @@ _cloudflare_list_dns_records() {
     local record_id record_type record_name record_content record_proxied record_ttl
     IFS='|' read -r record_id record_type record_name record_content record_proxied record_ttl <<< "${selected_record}"
     
+    echo "Đã chọn bản ghi: ${record_type} ${record_name} -> ${record_content}"
+    
     case ${action_choice} in
         1)
             _cloudflare_edit_dns_record "${domain}" "${zone_id}" "${record_id}" "${record_type}" "${record_name}" "${record_content}" "${record_proxied}"
@@ -317,6 +452,11 @@ _cloudflare_add_single_dns_record() {
     local domain=$1
     local zone_id=$2
     
+    echo "=== DEBUG: Adding single DNS record ==="
+    echo "Domain: ${domain}"
+    echo "Zone ID: ${zone_id}"
+    echo ""
+    
     echo "${CLOUDFLARE_DNS_ADD}"
     echo ""
     
@@ -327,6 +467,8 @@ _cloudflare_add_single_dns_record() {
     local type_choice
     read -r -p "${SELECT_OPTION}" type_choice
     
+    echo "User selected type choice: ${type_choice}"
+    
     local record_type
     case ${type_choice} in
         1) record_type="A" ;;
@@ -334,11 +476,15 @@ _cloudflare_add_single_dns_record() {
         *) echo "${WRONG_SELECT}"; return 1 ;;
     esac
     
+    echo "Record type: ${record_type}"
+    
     # Get record name
     echo "${CLOUDFLARE_DNS_ENTER_NAME}"
     echo "(${CLOUDFLARE_SUBDOMAIN_HINT})"
     local subdomain
     read -r subdomain
+    
+    echo "User entered subdomain: '${subdomain}'"
     
     local record_name
     if [[ -z "${subdomain}" || "${subdomain}" == "@" ]]; then
@@ -347,10 +493,14 @@ _cloudflare_add_single_dns_record() {
         record_name="${subdomain}.${domain}"
     fi
     
+    echo "Final record name: ${record_name}"
+    
     # Get IP address
     echo "${CLOUDFLARE_DNS_ENTER_IP}"
     local ip_address
     read -r ip_address
+    
+    echo "User entered IP: ${ip_address}"
     
     # Validate IP address
     if [[ "${record_type}" == "A" ]]; then
@@ -358,11 +508,13 @@ _cloudflare_add_single_dns_record() {
             echo "Địa chỉ IPv4 không hợp lệ"
             return 1
         fi
+        echo "IPv4 validation passed"
     elif [[ "${record_type}" == "AAAA" ]]; then
         if ! [[ "${ip_address}" =~ ^[0-9a-fA-F:]+$ ]]; then
             echo "Địa chỉ IPv6 không hợp lệ"
             return 1
         fi
+        echo "IPv6 validation passed"
     fi
     
     # Ask about proxy (only for A records)
@@ -371,10 +523,13 @@ _cloudflare_add_single_dns_record() {
         echo "${CLOUDFLARE_PROXY} (y/n)"
         local proxy_choice
         read -r proxy_choice
+        echo "User proxy choice: ${proxy_choice}"
         if [[ "${proxy_choice}" == "y" || "${proxy_choice}" == "Y" ]]; then
             proxied="true"
         fi
     fi
+    
+    echo "Proxied setting: ${proxied}"
     
     # Confirm
     echo ""
@@ -389,6 +544,8 @@ _cloudflare_add_single_dns_record() {
     local confirm
     read -r confirm
     
+    echo "User confirmation: ${confirm}"
+    
     if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
         echo "${CLOUDFLARE_OPERATION_CANCELLED}"
         return 0
@@ -396,8 +553,19 @@ _cloudflare_add_single_dns_record() {
     
     # Add DNS record
     echo "${PROCESSING}"
+    echo "Calling _add_dns_record with parameters:"
+    echo "- Email: ${CF_EMAIL}"
+    echo "- API Key: ${CF_API_KEY:0:10}..."
+    echo "- Zone ID: ${zone_id}"
+    echo "- Type: ${record_type}"
+    echo "- Name: ${record_name}"
+    echo "- Content: ${ip_address}"
+    echo "- Proxied: ${proxied}"
+    
     local result
     result=$(_add_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${record_type}" "${record_name}" "${ip_address}" "${proxied}")
+    
+    echo "API result: ${result}"
     
     if [[ "${result}" == error:* ]]; then
         local error

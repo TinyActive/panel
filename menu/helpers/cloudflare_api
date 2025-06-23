@@ -101,20 +101,25 @@ _get_cloudflare_zones() {
     local cf_api_key=$2
     local auth_method=${CF_AUTH_METHOD:-"key"}
     
+    _debug_log "Getting Cloudflare zones for email: ${cf_email}, auth_method: ${auth_method}"
+    
     # Get list of zones (domains)
     local response
     
     if [[ "${auth_method}" == "token" ]]; then
+        _debug_log "Using Bearer token authentication for zones"
         response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?per_page=50" \
             -H "Authorization: Bearer ${cf_api_key}" \
             -H "Content-Type: application/json")
     else
+        _debug_log "Using email/key authentication for zones"
         response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?per_page=50" \
             -H "X-Auth-Email: ${cf_email}" \
             -H "X-Auth-Key: ${cf_api_key}" \
             -H "Content-Type: application/json")
     fi
 
+    _debug_response "${response}" "GET_ZONES"
     echo "${response}"
 }
 
@@ -124,24 +129,38 @@ _get_zone_id() {
     local domain=$3
     local auth_method=${CF_AUTH_METHOD:-"key"}
     
+    _debug_log "Getting zone ID for domain: ${domain}"
+    
     # Get zone ID for a domain
     local response
     
     if [[ "${auth_method}" == "token" ]]; then
+        _debug_log "Using Bearer token for zone ID lookup"
         response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
             -H "Authorization: Bearer ${cf_api_key}" \
             -H "Content-Type: application/json")
     else
+        _debug_log "Using email/key for zone ID lookup"
         response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
             -H "X-Auth-Email: ${cf_email}" \
             -H "X-Auth-Key: ${cf_api_key}" \
             -H "Content-Type: application/json")
     fi
 
+    _debug_response "${response}" "GET_ZONE_ID"
+
     # Extract zone ID
     local zone_id
-    zone_id=$(echo "${response}" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4)
+    if command -v jq >/dev/null 2>&1; then
+        zone_id=$(echo "${response}" | jq -r '.result[0].id' 2>/dev/null)
+        if [[ "${zone_id}" == "null" ]]; then
+            zone_id=""
+        fi
+    else
+        zone_id=$(echo "${response}" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4)
+    fi
     
+    _debug_log "Extracted zone ID: ${zone_id}"
     echo "${zone_id}"
 }
 
@@ -193,27 +212,39 @@ _add_dns_record() {
     local proxied=$7  # true or false
     local auth_method=${CF_AUTH_METHOD:-"key"}
     
+    _debug_log "Adding DNS record: ${record_type} ${record_name} -> ${record_content} (proxied: ${proxied})"
+    _debug_log "Zone ID: ${zone_id}, Auth method: ${auth_method}"
+    
     # Add DNS record
     local response
+    local curl_data="{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"ttl\":1,\"proxied\":${proxied}}"
+    
+    _debug_log "Request data: ${curl_data}"
     
     if [[ "${auth_method}" == "token" ]]; then
+        _debug_log "Using Bearer token authentication"
         response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
             -H "Authorization: Bearer ${cf_api_key}" \
             -H "Content-Type: application/json" \
-            --data "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"ttl\":1,\"proxied\":${proxied}}")
+            --data "${curl_data}")
     else
+        _debug_log "Using email/key authentication"
         response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
             -H "X-Auth-Email: ${cf_email}" \
             -H "X-Auth-Key: ${cf_api_key}" \
             -H "Content-Type: application/json" \
-            --data "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"ttl\":1,\"proxied\":${proxied}}")
+            --data "${curl_data}")
     fi
+
+    _debug_response "${response}" "ADD_DNS_RECORD"
 
     # Check if the record was added successfully
     if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        _debug_log "DNS record added successfully"
         echo "success"
     else
         local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        _debug_log "DNS record add failed: ${error}"
         echo "error:${error}"
     fi
 }
@@ -225,23 +256,30 @@ _get_dns_records() {
     local record_type=${4:-""}  # Optional: filter by type (A, AAAA)
     local auth_method=${CF_AUTH_METHOD:-"key"}
     
+    _debug_log "Getting DNS records for zone_id: ${zone_id}, auth_method: ${auth_method}"
+    
     local url="https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records"
     if [[ -n "${record_type}" ]]; then
         url="${url}?type=${record_type}"
     fi
     
+    _debug_log "API URL: ${url}"
+    
     local response
     if [[ "${auth_method}" == "token" ]]; then
+        _debug_log "Using API Token authentication"
         response=$(curl -s -X GET "${url}" \
             -H "Authorization: Bearer ${cf_api_key}" \
             -H "Content-Type: application/json")
     else
+        _debug_log "Using Global API Key authentication with email: ${cf_email}"
         response=$(curl -s -X GET "${url}" \
             -H "X-Auth-Email: ${cf_email}" \
             -H "X-Auth-Key: ${cf_api_key}" \
             -H "Content-Type: application/json")
     fi
 
+    _debug_response "${response}" "GET_DNS_RECORDS"
     echo "${response}"
 }
 
@@ -673,12 +711,37 @@ _make_api_request() {
 # Parse JSON function if jq is not available
 _parse_json_array() {
     local json_string="$1"
-    local key="$2"
+    
+    _debug_log "Parsing JSON array - input length: ${#json_string}"
+    
+    # Check if response contains success field
+    if [[ "${json_string}" == *'"success":false'* ]]; then
+        _debug_log "API call failed - success is false"
+        local error_msg=$(echo "${json_string}" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
+        _debug_log "Error message: ${error_msg}"
+        return 1
+    fi
+    
+    # Check if result array exists
+    if [[ "${json_string}" != *'"result":'* ]]; then
+        _debug_log "No result field found in response"
+        return 1
+    fi
     
     # Simple JSON parsing for DNS records
-    # This extracts values from JSON array without requiring jq
-    echo "${json_string}" | grep -o '"result":\[.*\]' | sed 's/"result":\[//;s/\]$//' | \
-    sed 's/},{/}\n{/g' | while read -r record; do
+    # Extract the result array content
+    local result_content=$(echo "${json_string}" | sed -n 's/.*"result":\[\([^]]*\)\].*/\1/p')
+    
+    if [[ -z "${result_content}" ]]; then
+        _debug_log "Result array is empty or not found"
+        return 1
+    fi
+    
+    _debug_log "Result content found, parsing records..."
+    
+    # Split records by },{ pattern
+    echo "${result_content}" | sed 's/},{/}\n{/g' | while IFS= read -r record; do
+        # Only process A and AAAA records
         if [[ "${record}" == *'"type":"A"'* ]] || [[ "${record}" == *'"type":"AAAA"'* ]]; then
             local id=$(echo "${record}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
             local type=$(echo "${record}" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
@@ -687,7 +750,29 @@ _parse_json_array() {
             local proxied=$(echo "${record}" | sed -n 's/.*"proxied":\([^,}]*\).*/\1/p')
             local ttl=$(echo "${record}" | sed -n 's/.*"ttl":\([^,}]*\).*/\1/p')
             
+            _debug_log "Found record: ${type} ${name} -> ${content} (proxied: ${proxied})"
             echo "${id}|${type}|${name}|${content}|${proxied}|${ttl}"
         fi
     done
+}
+
+# Debug function for DNS management
+_debug_log() {
+    local message="$1"
+    local debug_file="/tmp/cloudflare_dns_debug.log"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${message}" >> "${debug_file}"
+    echo "[DEBUG] ${message}"
+}
+
+_debug_response() {
+    local response="$1"
+    local operation="$2"
+    local debug_file="/tmp/cloudflare_dns_debug.log"
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === ${operation} RESPONSE ===" >> "${debug_file}"
+    echo "${response}" >> "${debug_file}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === END RESPONSE ===" >> "${debug_file}"
+    
+    # Also show first 200 chars of response for immediate feedback
+    echo "[DEBUG] ${operation} response preview: ${response:0:200}..."
 }

@@ -114,7 +114,7 @@ install_requirement(){
     apt-get install build-essential gcc g++ make flex bison openssl libssl-dev perl perl-base perl-modules libperl-dev cmake \
         libperl4-corelibs-perl libwww-perl libaio-dev libaio-dev gifsicle webp libde265-dev \
         zlib1g zlib1g-dev libcap-dev cron bzip2 zip automake autoconf libtool cmake python3 libdb-dev libsasl2-dev \
-        libncurses6 libncurses6-dev libsystemd-dev bind9 dnsutils quota patch logrotate rsyslog libc6-dev libexpat1-dev \
+        libncurses6 libncurses-dev libsystemd-dev bind9 dnsutils quota patch logrotate rsyslog libc6-dev libexpat1-dev \
         libcrypt-openssl-rsa-perl libnuma-dev libnuma1 git dos2unix ipcalc unzip net-tools wget apache2-utils grc \
         libjpeg-dev libpng-dev libtiff-dev libgif-dev libwebp-dev imagemagick libpcre3 libpcre3-dev uuid-dev \
         gnupg2 ca-certificates lsb-release apache2-dev libxml2-dev libcurl4-openssl-dev liblmdb-dev libgeoip-dev pkgconf \

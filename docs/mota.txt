@@ -1,0 +1,13 @@
+dựa vào dự án này hãy lên ý tưởng bổ sung cho tôi một menu riêng ở main menu có tên Quản Lý cloudflare với các tính năng như sau:
+- tính năng này cần Global API key, nên cần kiểm tra đảm bảo là Global API key full quyền tài khoản
+- Thêm domain vào cloudflare, sau khi thêm thì hiển thị NS record để người dùng thay đổi
+- tùy chọn nhập domain, subdomain để trỏ về VPS của mình thông qua Cloudflare bật proxy kèm theo tùy chọn kích hoạt SSL Free của Cloudflare theo mặc định
+- tùy chọn Chặn IP và country code theo chuẩn ISO 3166-1 alpha-2 thông qua cloudflare trên từng domain cụ thể thông qua Security rules 
+- Quản lý cache cloudflare của domain được chỉ định bao gồm cài đặt và xóa Cache Reserve, kích hoạt Tiered Cache, Purge All Cached Content cho từng domain cụ thể
+- tùy chọn Block AI bots Thông qua Cloudflare API cho từng domain cụ thể
+- kích Hoạt chế độ Email Routing cho từng main domain cụ thể mặc định có kích hoạt Catch All Rule của Cloudflare email routing
+- Tùy chọn tạo Turnstile cho từng domain cụ thể
+- tùy chọn bật tắt các chế độ Under Attack Mode và Development Mode cho từng domain cụ thể
+
+
+Lưu ý: các tính năng trên đều phát triển code python 3 và tích hợp vào hệ thống hiện tại, python sử dụng Cloudflare Python API library

@@ -159,40 +159,232 @@ cloudflare_add_dns_record() {
     domain=$(echo "${result}" | cut -d':' -f1)
     zone_id=$(echo "${result}" | cut -d':' -f2)
 
-    # Get server's public IP
-    local ip_address="${IPADDRESS}"
-    
-    # If IPADDRESS is not available, try to detect it
-    if [[ -z "${ip_address}" ]]; then
-        ip_address=$(curl -s https://ipinfo.io/ip || curl -s https://api.ipify.org)
+    # DNS Management Menu
+    local choice=1
+    while [ "${choice}" != "0" ]
+    do
+        clear
+        printf "%s\n" "${GREEN}${CLOUDFLARE_DNS_MENU_TITLE}${NC}"
+        printf "%s\n" "Domain: ${domain}"
+        printf "%s\n" "=================================================="
+        printf "%s\n" "1. ${CLOUDFLARE_DNS_LIST}"
+        printf "%s\n" "2. ${CLOUDFLARE_DNS_ADD}"
+        printf "%s\n" "0. ${BACK_OPTION}"
+        printf "%s\n" "=================================================="
+        read -r -p "${SELECT_OPTION}" choice
         
-        # If still unable to detect, ask for manual input
-        if [[ -z "${ip_address}" ]]; then
-            echo "Unable to detect server's public IP. Please enter it manually:"
-            read -r ip_address
+        if [ -z "${choice}" ]; then
+            choice=1
+            continue
         fi
-    fi
+        
+        case ${choice} in
+            1) 
+                _cloudflare_list_dns_records "${domain}" "${zone_id}"
+                echo ""
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+            2) 
+                _cloudflare_add_single_dns_record "${domain}" "${zone_id}"
+                echo ""
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+            0) 
+                return 0
+                ;;
+            *) 
+                clear
+                printf "%s\n" "${RED}${WRONG_OPTION}${NC}"
+                sleep 2
+                choice=1
+                ;;
+        esac
+    done
+}
 
-    # Get record details
-    echo "${CLOUDFLARE_ENTER_SUBDOMAIN}"
+_cloudflare_list_dns_records() {
+    local domain=$1
+    local zone_id=$2
+      echo "${PROCESSING}"
+    local response
+    response=$(_get_dns_records "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+    
+    # Check if API call was successful
+    if [[ -z "${response}" ]] || [[ "${response}" == *'"success":false'* ]]; then
+        echo "Lỗi: Không thể lấy danh sách bản ghi DNS"
+        if [[ "${response}" == *'"message"'* ]]; then
+            local error_msg=$(echo "${response}" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
+            echo "Chi tiết: ${error_msg}"
+        fi
+        return 1
+    fi
+      # Parse and filter A and AAAA records only
+    local records
+    # Try using jq first, fallback to custom parser
+    if command -v jq >/dev/null 2>&1; then
+        records=$(echo "${response}" | jq -r '.result[] | select(.type == "A" or .type == "AAAA") | "\(.id)|\(.type)|\(.name)|\(.content)|\(.proxied)|\(.ttl)"' 2>/dev/null)
+    else
+        records=$(_parse_json_array "${response}")
+    
+    if [[ -z "${records}" ]]; then
+        echo "${CLOUDFLARE_DNS_NO_RECORDS}"
+        return 0
+    fi
+    
+    clear
+    printf "%s\n" "${GREEN}${CLOUDFLARE_DNS_LIST} - ${domain}${NC}"
+    echo ""
+    printf "%s\n" "${CLOUDFLARE_DNS_TABLE_HEADER}"
+    printf "%s\n" "${CLOUDFLARE_DNS_TABLE_SEPARATOR}"
+    
+    local count=1
+    echo "${records}" | while IFS='|' read -r id type name content proxied ttl; do
+        local proxy_status="${CLOUDFLARE_DNS_NOT_PROXIED}"
+        if [[ "${proxied}" == "true" ]]; then
+            proxy_status="${CLOUDFLARE_DNS_PROXIED}"
+        fi
+        
+        local ttl_display="${ttl}"
+        if [[ "${ttl}" == "1" ]]; then
+            ttl_display="${CLOUDFLARE_DNS_AUTO}"
+        fi
+        
+        # Truncate long names and content for display
+        local display_name="${name}"
+        local display_content="${content}"
+        
+        if [[ ${#display_name} -gt 22 ]]; then
+            display_name="${display_name:0:19}..."
+        fi
+        
+        if [[ ${#display_content} -gt 19 ]]; then
+            display_content="${display_content:0:16}..."
+        fi
+        
+        printf "| %-3s | %-5s | %-22s | %-19s | %-5s | %-4s |\n" \
+            "${count}" "${type}" "${display_name}" "${display_content}" "${proxy_status}" "${ttl_display}"
+        ((count++))
+    done
+    
+    echo ""
+    echo "${CLOUDFLARE_DNS_SELECT_RECORD}"
+    echo "1. ${CLOUDFLARE_DNS_EDIT}"
+    echo "2. ${CLOUDFLARE_DNS_DELETE}"
+    echo "0. ${CLOUDFLARE_DNS_BACK_TO_LIST}"
+    
+    local action_choice
+    read -r -p "${SELECT_OPTION}" action_choice
+    
+    if [[ "${action_choice}" == "0" ]]; then
+        return 0
+    fi
+    
+    echo "Nhập số thứ tự bản ghi:"
+    local record_number
+    read -r record_number
+    
+    if ! [[ "${record_number}" =~ ^[0-9]+$ ]] || [[ "${record_number}" -lt 1 ]]; then
+        echo "${WRONG_SELECT}"
+        return 1
+    fi
+    
+    # Get the selected record
+    local selected_record
+    selected_record=$(echo "${records}" | sed -n "${record_number}p")
+    
+    if [[ -z "${selected_record}" ]]; then
+        echo "${WRONG_SELECT}"
+        return 1
+    fi
+    
+    local record_id record_type record_name record_content record_proxied record_ttl
+    IFS='|' read -r record_id record_type record_name record_content record_proxied record_ttl <<< "${selected_record}"
+    
+    case ${action_choice} in
+        1)
+            _cloudflare_edit_dns_record "${domain}" "${zone_id}" "${record_id}" "${record_type}" "${record_name}" "${record_content}" "${record_proxied}"
+            ;;
+        2)
+            _cloudflare_delete_dns_record "${domain}" "${zone_id}" "${record_id}" "${record_name}" "${record_content}"
+            ;;
+        *)
+            echo "${WRONG_SELECT}"
+            ;;
+    esac
+}
+
+_cloudflare_add_single_dns_record() {
+    local domain=$1
+    local zone_id=$2
+    
+    echo "${CLOUDFLARE_DNS_ADD}"
+    echo ""
+    
+    # Select record type
+    echo "Chọn loại bản ghi:"
+    echo "1. A (IPv4)"
+    echo "2. AAAA (IPv6)"
+    local type_choice
+    read -r -p "${SELECT_OPTION}" type_choice
+    
+    local record_type
+    case ${type_choice} in
+        1) record_type="A" ;;
+        2) record_type="AAAA" ;;
+        *) echo "${WRONG_SELECT}"; return 1 ;;
+    esac
+    
+    # Get record name
+    echo "${CLOUDFLARE_DNS_ENTER_NAME}"
     echo "(${CLOUDFLARE_SUBDOMAIN_HINT})"
     local subdomain
     read -r subdomain
-
+    
     local record_name
-    if [[ -z "${subdomain}" ]]; then
+    if [[ -z "${subdomain}" || "${subdomain}" == "@" ]]; then
         record_name="${domain}"
     else
         record_name="${subdomain}.${domain}"
     fi
     
+    # Get IP address
+    echo "${CLOUDFLARE_DNS_ENTER_IP}"
+    local ip_address
+    read -r ip_address
+    
+    # Validate IP address
+    if [[ "${record_type}" == "A" ]]; then
+        if ! [[ "${ip_address}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "Địa chỉ IPv4 không hợp lệ"
+            return 1
+        fi
+    elif [[ "${record_type}" == "AAAA" ]]; then
+        if ! [[ "${ip_address}" =~ ^[0-9a-fA-F:]+$ ]]; then
+            echo "Địa chỉ IPv6 không hợp lệ"
+            return 1
+        fi
+    fi
+    
+    # Ask about proxy (only for A records)
+    local proxied="false"
+    if [[ "${record_type}" == "A" ]]; then
+        echo "${CLOUDFLARE_PROXY} (y/n)"
+        local proxy_choice
+        read -r proxy_choice
+        if [[ "${proxy_choice}" == "y" || "${proxy_choice}" == "Y" ]]; then
+            proxied="true"
+        fi
+    fi
+    
+    # Confirm
     echo ""
     echo "${CLOUDFLARE_CONFIRM_DNS_RECORD}"
-    echo "- ${CLOUDFLARE_DOMAIN_RECORD}: ${record_name}"
-    echo "- ${CLOUDFLARE_SERVER_IP}: ${ip_address}"
+    echo "- ${CLOUDFLARE_DNS_TYPE}: ${record_type}"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${ip_address}"
+    echo "- ${CLOUDFLARE_DNS_PROXY_STATUS}: ${proxied}"
     echo ""
     
-    # Ask for confirmation
     echo "${CLOUDFLARE_CONFIRM_PROCEED} (y/n)"
     local confirm
     read -r confirm
@@ -201,35 +393,140 @@ cloudflare_add_dns_record() {
         echo "${CLOUDFLARE_OPERATION_CANCELLED}"
         return 0
     fi
-
-    # Ask about proxy
-    echo "${CLOUDFLARE_PROXY} (y/n)"
-    local proxy_choice
-    read -r proxy_choice
-    local proxied="false"
-    if [[ "${proxy_choice}" == "y" || "${proxy_choice}" == "Y" ]]; then
-        proxied="true"
-
-        # Ask about SSL
-        echo "${CLOUDFLARE_SSL} (y/n)"
-        local ssl_choice
-        read -r ssl_choice
-        if [[ "${ssl_choice}" == "y" || "${ssl_choice}" == "Y" ]]; then
-            # Enable SSL for the zone
-            _update_cache_settings "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "ssl" "flexible"
-        fi
-    fi
-
+    
     # Add DNS record
+    echo "${PROCESSING}"
     local result
-    result=$(_add_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "A" "${record_name}" "${ip_address}" "${proxied}")
-
+    result=$(_add_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${record_type}" "${record_name}" "${ip_address}" "${proxied}")
+    
     if [[ "${result}" == error:* ]]; then
         local error
         error=$(echo "${result}" | cut -d':' -f2-)
-        echo "${error}"
+        echo "Lỗi: ${error}"
     else
         echo "${CLOUDFLARE_RECORD_ADDED}"
+    fi
+}
+
+_cloudflare_edit_dns_record() {
+    local domain=$1
+    local zone_id=$2
+    local record_id=$3
+    local record_type=$4
+    local record_name=$5
+    local record_content=$6
+    local record_proxied=$7
+    
+    echo "${CLOUDFLARE_DNS_EDIT}"
+    echo ""
+    echo "Bản ghi hiện tại:"
+    echo "- ${CLOUDFLARE_DNS_TYPE}: ${record_type}"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${record_content}"
+    echo "- ${CLOUDFLARE_DNS_PROXY_STATUS}: ${record_proxied}"
+    echo ""
+    
+    # Get new IP address
+    echo "Nhập địa chỉ IP mới (Enter để giữ nguyên: ${record_content}):"
+    local new_content
+    read -r new_content
+    
+    if [[ -z "${new_content}" ]]; then
+        new_content="${record_content}"
+    fi
+    
+    # Validate IP address
+    if [[ "${record_type}" == "A" ]]; then
+        if ! [[ "${new_content}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "Địa chỉ IPv4 không hợp lệ"
+            return 1
+        fi
+    elif [[ "${record_type}" == "AAAA" ]]; then
+        if ! [[ "${new_content}" =~ ^[0-9a-fA-F:]+$ ]]; then
+            echo "Địa chỉ IPv6 không hợp lệ"
+            return 1
+        fi
+    fi
+    
+    # Ask about proxy (only for A records)
+    local new_proxied="${record_proxied}"
+    if [[ "${record_type}" == "A" ]]; then
+        echo "${CLOUDFLARE_PROXY} (y/n, Enter để giữ nguyên: ${record_proxied}):"
+        local proxy_choice
+        read -r proxy_choice
+        if [[ "${proxy_choice}" == "y" || "${proxy_choice}" == "Y" ]]; then
+            new_proxied="true"
+        elif [[ "${proxy_choice}" == "n" || "${proxy_choice}" == "N" ]]; then
+            new_proxied="false"
+        fi
+    fi
+    
+    # Confirm
+    echo ""
+    echo "Xác nhận cập nhật bản ghi:"
+    echo "- ${CLOUDFLARE_DNS_TYPE}: ${record_type}"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${new_content}"
+    echo "- ${CLOUDFLARE_DNS_PROXY_STATUS}: ${new_proxied}"
+    echo ""
+    
+    echo "${CLOUDFLARE_CONFIRM_PROCEED} (y/n)"
+    local confirm
+    read -r confirm
+    
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "${CLOUDFLARE_OPERATION_CANCELLED}"
+        return 0
+    fi
+    
+    # Update DNS record
+    echo "${PROCESSING}"
+    local result
+    result=$(_update_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${record_id}" "${record_type}" "${record_name}" "${new_content}" "${new_proxied}")
+    
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "Lỗi: ${error}"
+    else
+        echo "${CLOUDFLARE_DNS_RECORD_UPDATED}"
+    fi
+}
+
+_cloudflare_delete_dns_record() {
+    local domain=$1
+    local zone_id=$2
+    local record_id=$3
+    local record_name=$4
+    local record_content=$5
+    
+    echo "${CLOUDFLARE_DNS_DELETE}"
+    echo ""
+    echo "Bản ghi sẽ bị xóa:"
+    echo "- ${CLOUDFLARE_DNS_NAME}: ${record_name}"
+    echo "- ${CLOUDFLARE_DNS_CONTENT}: ${record_content}"
+    echo ""
+    
+    echo "${CLOUDFLARE_DNS_CONFIRM_DELETE} (y/n)"
+    local confirm
+    read -r confirm
+    
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "${CLOUDFLARE_OPERATION_CANCELLED}"
+        return 0
+    fi
+    
+    # Delete DNS record
+    echo "${PROCESSING}"
+    local result
+    result=$(_delete_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${record_id}")
+    
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "Lỗi: ${error}"
+    else
+        echo "${CLOUDFLARE_DNS_RECORD_DELETED}"
     fi
 }
 

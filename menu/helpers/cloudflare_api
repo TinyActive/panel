@@ -218,6 +218,93 @@ _add_dns_record() {
     fi
 }
 
+_get_dns_records() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local record_type=${4:-""}  # Optional: filter by type (A, AAAA)
+    local auth_method=${CF_AUTH_METHOD:-"key"}
+    
+    local url="https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records"
+    if [[ -n "${record_type}" ]]; then
+        url="${url}?type=${record_type}"
+    fi
+    
+    local response
+    if [[ "${auth_method}" == "token" ]]; then
+        response=$(curl -s -X GET "${url}" \
+            -H "Authorization: Bearer ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    else
+        response=$(curl -s -X GET "${url}" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    fi
+
+    echo "${response}"
+}
+
+_update_dns_record() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local record_id=$4
+    local record_type=$5
+    local record_name=$6
+    local record_content=$7
+    local proxied=$8
+    local auth_method=${CF_AUTH_METHOD:-"key"}
+    
+    local response
+    if [[ "${auth_method}" == "token" ]]; then
+        response=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
+            -H "Authorization: Bearer ${cf_api_key}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"ttl\":1,\"proxied\":${proxied}}")
+    else
+        response=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"ttl\":1,\"proxied\":${proxied}}")
+    fi
+
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_delete_dns_record() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local record_id=$4
+    local auth_method=${CF_AUTH_METHOD:-"key"}
+    
+    local response
+    if [[ "${auth_method}" == "token" ]]; then
+        response=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
+            -H "Authorization: Bearer ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    else
+        response=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    fi
+
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
 _create_security_rule() {
     local cf_email=$1
     local cf_api_key=$2
@@ -581,4 +668,26 @@ _make_api_request() {
     
     response=$(eval "${curl_cmd}")
     echo "${response}"
+}
+
+# Parse JSON function if jq is not available
+_parse_json_array() {
+    local json_string="$1"
+    local key="$2"
+    
+    # Simple JSON parsing for DNS records
+    # This extracts values from JSON array without requiring jq
+    echo "${json_string}" | grep -o '"result":\[.*\]' | sed 's/"result":\[//;s/\]$//' | \
+    sed 's/},{/}\n{/g' | while read -r record; do
+        if [[ "${record}" == *'"type":"A"'* ]] || [[ "${record}" == *'"type":"AAAA"'* ]]; then
+            local id=$(echo "${record}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            local type=$(echo "${record}" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
+            local name=$(echo "${record}" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
+            local content=$(echo "${record}" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p')
+            local proxied=$(echo "${record}" | sed -n 's/.*"proxied":\([^,}]*\).*/\1/p')
+            local ttl=$(echo "${record}" | sed -n 's/.*"ttl":\([^,}]*\).*/\1/p')
+            
+            echo "${id}|${type}|${name}|${content}|${proxied}|${ttl}"
+        fi
+    done
 }

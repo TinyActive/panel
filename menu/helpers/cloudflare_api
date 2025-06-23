@@ -16,6 +16,7 @@ _save_cloudflare_config() {
     # Store Cloudflare API key and email for reuse
     local cf_email=$1
     local cf_api_key=$2
+    local auth_method=${3:-"key"}
 
     if [[ -f "${CF_CONFIG_FILE}" ]]; then
         rm -f "${CF_CONFIG_FILE}"
@@ -24,6 +25,8 @@ _save_cloudflare_config() {
     cat > "${CF_CONFIG_FILE}" << EOF
 CF_EMAIL="${cf_email}"
 CF_API_KEY="${cf_api_key}"
+CF_AUTH_METHOD="${auth_method}"
+CF_CONNECTED_AT="$(date "+%Y-%m-%d %H:%M:%S")"
 EOF
 
     chmod 600 "${CF_CONFIG_FILE}"
@@ -53,24 +56,54 @@ _validate_api_key() {
         -H "X-Auth-Key: ${cf_api_key}" \
         -H "Content-Type: application/json")
 
+    # For debugging - save response to a log file
+    echo "${response}" > "/tmp/cloudflare_api_debug.log"
+
     # Check if the API call was successful
     if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
         return 0
     else
-        return 1
+        # Try alternative authentication method (API Token)
+        local token_response
+        token_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+            -H "Authorization: Bearer ${cf_api_key}" \
+            -H "Content-Type: application/json")
+        
+        echo "${token_response}" >> "/tmp/cloudflare_api_debug.log"
+        
+        if [[ "$(echo "${token_response}" | grep -o '"success":true')" ]]; then
+            # If token method works, we're using an API Token instead of Global API Key
+            # Set a flag in the config file
+            CF_AUTH_METHOD="token"
+            return 0
+        else
+            # Extract error message for debugging
+            local error_message
+            error_message=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+            echo "Authentication Error: ${error_message}" >> "/tmp/cloudflare_api_debug.log"
+            return 1
+        fi
     fi
 }
 
 _get_cloudflare_zones() {
     local cf_email=$1
     local cf_api_key=$2
+    local auth_method=${3:-"key"}
     
     # Get list of zones (domains)
     local response
-    response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?per_page=50" \
-        -H "X-Auth-Email: ${cf_email}" \
-        -H "X-Auth-Key: ${cf_api_key}" \
-        -H "Content-Type: application/json")
+    
+    if [[ "${auth_method}" == "token" ]]; then
+        response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?per_page=50" \
+            -H "Authorization: Bearer ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    else
+        response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?per_page=50" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    fi
 
     echo "${response}"
 }
@@ -363,4 +396,52 @@ _update_security_mode() {
         local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
         echo "error:${error}"
     fi
+}
+
+_get_cloudflare_account_info() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local auth_method=${3:-"key"}
+    
+    # Get account information
+    local response
+    
+    if [[ "${auth_method}" == "token" ]]; then
+        response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user" \
+            -H "Authorization: Bearer ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    else
+        response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json")
+    fi
+
+    echo "${response}"
+}
+
+_make_api_request() {
+    local method=$1
+    local endpoint=$2
+    local cf_email=$3
+    local cf_api_key=$4
+    local auth_method=${5:-"key"}
+    local data=${6:-""}
+    
+    local curl_cmd="curl -s -X ${method} \"https://api.cloudflare.com/client/v4/${endpoint}\""
+    
+    if [[ "${auth_method}" == "token" ]]; then
+        curl_cmd="${curl_cmd} -H \"Authorization: Bearer ${cf_api_key}\""
+    else
+        curl_cmd="${curl_cmd} -H \"X-Auth-Email: ${cf_email}\" -H \"X-Auth-Key: ${cf_api_key}\""
+    fi
+    
+    curl_cmd="${curl_cmd} -H \"Content-Type: application/json\""
+    
+    if [[ -n "${data}" ]]; then
+        curl_cmd="${curl_cmd} --data '${data}'"
+    fi
+    
+    response=$(eval "${curl_cmd}")
+    echo "${response}"
 }

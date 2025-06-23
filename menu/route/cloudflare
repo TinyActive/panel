@@ -17,25 +17,41 @@ source /var/hostvn/menu/validate/rule
 _cloudflare_auth() {
     local cf_email
     local cf_api_key
+    local auth_method="key"
+    local force_reauth=${1:-false}
 
     # Try to load config first
-    if ! _load_cloudflare_config; then
-        echo "${CLOUDFLARE_API_KEY}"
-        read -r cf_api_key
+    if ! _load_cloudflare_config || [[ "${force_reauth}" == "true" ]]; then
+        echo "${CLOUDFLARE_API_INFO}"
+        echo "${CLOUDFLARE_API_TYPES}"
+        echo ""
         
         echo "${CLOUDFLARE_EMAIL}"
         read -r cf_email
+        
+        echo "${CLOUDFLARE_API_KEY}"
+        read -r cf_api_key
 
         if ! _validate_api_key "${cf_email}" "${cf_api_key}"; then
             echo "${CLOUDFLARE_API_KEY_INVALID}"
-            exit 1
+            echo "${CLOUDFLARE_CHECK_DEBUG_LOG}"
+            return 1
         else
             echo "${CLOUDFLARE_API_KEY_VALID}"
-            _save_cloudflare_config "${cf_email}" "${cf_api_key}"
+            
+            # Check if we're using an API Token (set by _validate_api_key)
+            if [[ "${CF_AUTH_METHOD}" == "token" ]]; then
+                auth_method="token"
+            fi
+            
+            _save_cloudflare_config "${cf_email}" "${cf_api_key}" "${auth_method}"
+            return 0
         fi
     else
         cf_email="${CF_EMAIL}"
         cf_api_key="${CF_API_KEY}"
+        auth_method="${CF_AUTH_METHOD}"
+        return 0
     fi
 }
 
@@ -544,4 +560,107 @@ cloudflare_manage_security_modes() {
             echo "${WRONG_SELECT}"
             ;;
     esac
+}
+
+cloudflare_account_management() {
+    # Check if already connected
+    local is_connected="false"
+    local account_name=""
+    local account_email=""
+    local auth_type=""
+    local connected_at=""
+    
+    if _load_cloudflare_config; then
+        is_connected="true"
+        account_email="${CF_EMAIL}"
+        if [[ "${CF_AUTH_METHOD}" == "token" ]]; then
+            auth_type="${CLOUDFLARE_AUTH_TOKEN}"
+        else
+            auth_type="${CLOUDFLARE_AUTH_KEY}"
+        fi
+        connected_at="${CF_CONNECTED_AT}"
+        
+        # Get account info
+        local account_info
+        account_info=$(_get_cloudflare_account_info "${CF_EMAIL}" "${CF_API_KEY}" "${CF_AUTH_METHOD}")
+        
+        if [[ "$(echo "${account_info}" | grep -o '"success":true')" ]]; then
+            account_name=$(echo "${account_info}" | grep -o '"name":"[^"]*' | head -n1 | cut -d'"' -f4)
+        fi
+    fi
+    
+    clear
+    printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+    printf "%s      %s Scripts - Cloudflare Account Manager      %s\n" "${GREEN}" "${AUTHOR}" "${NC}"
+    printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+    
+    if [[ "${is_connected}" == "true" ]]; then
+        echo ""
+        echo "${CLOUDFLARE_ACCOUNT_CONNECTED}"
+        echo "- ${CLOUDFLARE_ACCOUNT_NAME}: ${account_name}"
+        echo "- ${CLOUDFLARE_ACCOUNT_EMAIL}: ${account_email}"
+        echo "- ${CLOUDFLARE_AUTH_TYPE}: ${auth_type}"
+        echo "- ${CLOUDFLARE_CONNECTED_AT}: ${connected_at}"
+        echo ""
+        echo "1. ${CLOUDFLARE_DISCONNECT}"
+        echo "2. ${CLOUDFLARE_RECONNECT}"
+        echo "0. ${BACK_OPTION}"
+        echo ""
+        echo "${SELECT_OPTION}"
+        
+        local choice
+        read -r choice
+        
+        case ${choice} in
+            1)
+                if [[ -f "${CF_CONFIG_FILE}" ]]; then
+                    rm -f "${CF_CONFIG_FILE}"
+                    echo "${CLOUDFLARE_DISCONNECTED}"
+                    sleep 2
+                fi
+                ;;
+            2)
+                _cloudflare_auth "true"
+                if [[ $? -eq 0 ]]; then
+                    echo "${CLOUDFLARE_RECONNECTED}"
+                    sleep 2
+                fi
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "${WRONG_OPTION}"
+                sleep 2
+                ;;
+        esac
+    else
+        echo ""
+        echo "${CLOUDFLARE_NOT_CONNECTED}"
+        echo ""
+        echo "1. ${CLOUDFLARE_CONNECT}"
+        echo "0. ${BACK_OPTION}"
+        echo ""
+        echo "${SELECT_OPTION}"
+        
+        local choice
+        read -r choice
+        
+        case ${choice} in
+            1)
+                _cloudflare_auth
+                if [[ $? -eq 0 ]]; then
+                    echo "${CLOUDFLARE_CONNECTED}"
+                    sleep 2
+                fi
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "${WRONG_OPTION}"
+                sleep 2
+                ;;
+        esac
+    fi
 }

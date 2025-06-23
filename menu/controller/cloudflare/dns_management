@@ -1,0 +1,812 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# shellcheck disable=SC1091
+source /var/hostvn/menu/helpers/cloudflare_api
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/lang/vi # Load language file
+
+# Debug logs to help troubleshoot
+DEBUG_LOG="/tmp/cloudflare_dns_debug.log"
+
+_debug_log() {
+    local message="$1"
+    echo "[$(date "+%Y-%m-%d %H:%M:%S")] $message" >> "${DEBUG_LOG}"
+    if [[ -n "${DEBUG_MODE}" && "${DEBUG_MODE}" == "true" ]]; then
+        echo "[DEBUG] $message"
+    fi
+}
+
+_clear_debug_log() {
+    > "${DEBUG_LOG}" # Clear the debug log
+}
+
+# Function to manage DNS records for a specific domain
+manage_dns_records() {
+    local domain="$1"
+    local zone_id="$2"
+    local cf_email="${CF_EMAIL}"
+    local cf_api_key="${CF_API_KEY}"
+
+    clear
+    echo "====================================================="
+    echo "            CLOUDFLARE DNS MANAGEMENT                "
+    echo "====================================================="
+    echo "Domain: ${domain} (Zone ID: ${zone_id})"
+    echo ""
+    echo "1. Xem danh sách bản ghi DNS A và AAAA"
+    echo "2. Thêm/Cập nhật bản ghi @ (domain gốc)"
+    echo "3. Thêm/Cập nhật bản ghi subdomain"
+    echo "4. Xóa bản ghi subdomain"
+    echo "5. Cấu hình Dynamic DNS"
+    echo "0. Quay lại"
+    echo ""
+    
+    read -r -p "${SELECT_OPTION}" dns_option
+    
+    case $dns_option in
+        1)
+            list_dns_records "${domain}" "${zone_id}"
+            ;;
+        2)
+            manage_root_record "${domain}" "${zone_id}"
+            ;;
+        3)
+            manage_subdomain "${domain}" "${zone_id}"
+            ;;
+        4)
+            delete_subdomain "${domain}" "${zone_id}"
+            ;;
+        5)
+            configure_dynamic_dns "${domain}" "${zone_id}"
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "${WRONG_OPTION}"
+            sleep 2
+            manage_dns_records "${domain}" "${zone_id}"
+            ;;
+    esac
+}
+
+# Function to list all A and AAAA records for a domain
+list_dns_records() {
+    local domain="$1"
+    local zone_id="$2"
+    local cf_email="${CF_EMAIL}"
+    local cf_api_key="${CF_API_KEY}"
+    
+    _debug_log "Fetching DNS records for domain: ${domain}, zone_id: ${zone_id}"
+    
+    # Fetch A records
+    local a_records_response
+    a_records_response=$(_get_dns_records "${cf_email}" "${cf_api_key}" "${zone_id}" "A")
+    
+    # Fetch AAAA records
+    local aaaa_records_response
+    aaaa_records_response=$(_get_dns_records "${cf_email}" "${cf_api_key}" "${zone_id}" "AAAA")
+    
+    clear
+    echo "====================================================="
+    echo "          DNS RECORDS FOR DOMAIN: ${domain}         "
+    echo "====================================================="
+    echo ""
+    echo "Bản ghi A (IPv4):"
+    echo "-------------------"
+    
+    # Parse A records
+    if [[ "${a_records_response}" == *'"success":true'* ]]; then
+        if [[ "${a_records_response}" == *'"count":0'* ]]; then
+            echo "Không có bản ghi A nào"
+        else
+            # Format and display A records
+            if command -v jq >/dev/null 2>&1; then
+                echo "${a_records_response}" | jq -r '.result[] | "Tên: " + .name + " | IP: " + .content + " | Proxied: " + (.proxied|tostring)'
+            else
+                # Complex parsing without jq - basic version
+                echo "${a_records_response}" | grep -o '"name":"[^"]*","type":"A","content":"[^"]*","proxied":[^,]*' | 
+                while IFS= read -r line; do
+                    name=$(echo "$line" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+                    content=$(echo "$line" | grep -o '"content":"[^"]*' | cut -d'"' -f4)
+                    proxied=$(echo "$line" | grep -o '"proxied":[^,]*' | cut -d':' -f2)
+                    echo "Tên: ${name} | IP: ${content} | Proxied: ${proxied}"
+                done
+            fi
+        fi
+    else
+        echo "Lỗi khi lấy bản ghi A: ${a_records_response}"
+    fi
+    
+    echo ""
+    echo "Bản ghi AAAA (IPv6):"
+    echo "-------------------"
+    
+    # Parse AAAA records
+    if [[ "${aaaa_records_response}" == *'"success":true'* ]]; then
+        if [[ "${aaaa_records_response}" == *'"count":0'* ]]; then
+            echo "Không có bản ghi AAAA nào"
+        else
+            # Format and display AAAA records
+            if command -v jq >/dev/null 2>&1; then
+                echo "${aaaa_records_response}" | jq -r '.result[] | "Tên: " + .name + " | IP: " + .content + " | Proxied: " + (.proxied|tostring)'
+            else
+                # Complex parsing without jq - basic version
+                echo "${aaaa_records_response}" | grep -o '"name":"[^"]*","type":"AAAA","content":"[^"]*","proxied":[^,]*' | 
+                while IFS= read -r line; do
+                    name=$(echo "$line" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+                    content=$(echo "$line" | grep -o '"content":"[^"]*' | cut -d'"' -f4)
+                    proxied=$(echo "$line" | grep -o '"proxied":[^,]*' | cut -d':' -f2)
+                    echo "Tên: ${name} | IP: ${content} | Proxied: ${proxied}"
+                done
+            fi
+        fi
+    else
+        echo "Lỗi khi lấy bản ghi AAAA: ${aaaa_records_response}"
+    fi
+    
+    echo ""
+    read -rp "Nhấn Enter để tiếp tục..."
+    
+    manage_dns_records "${domain}" "${zone_id}"
+}
+
+# Function to get a specific DNS record by name and type
+_get_record_by_name() {
+    local cf_email="$1"
+    local cf_api_key="$2"
+    local zone_id="$3"
+    local record_name="$4"
+    local record_type="$5"
+    
+    _debug_log "Looking for ${record_type} record with name: ${record_name} in zone: ${zone_id}"
+    
+    # Get all DNS records of the specified type
+    local records_response
+    records_response=$(_get_dns_records "${cf_email}" "${cf_api_key}" "${zone_id}" "${record_type}")
+    
+    # Find the record with the matching name
+    local record_id=""
+    local record_content=""
+    local record_proxied=""
+    
+    if [[ "${records_response}" == *'"success":true'* ]]; then
+        if command -v jq >/dev/null 2>&1; then
+            # Use jq to find the matching record
+            local jq_filter=".result[] | select(.name == \"${record_name}\") | {id: .id, content: .content, proxied: .proxied}"
+            local record_data
+            record_data=$(echo "${records_response}" | jq -r "${jq_filter}")
+            
+            if [[ -n "${record_data}" ]]; then
+                record_id=$(echo "${record_data}" | jq -r ".id")
+                record_content=$(echo "${record_data}" | jq -r ".content")
+                record_proxied=$(echo "${record_data}" | jq -r ".proxied")
+            fi
+        else
+            # Parse without jq
+            while IFS= read -r line; do
+                local name=$(echo "$line" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+                if [[ "${name}" == "${record_name}" ]]; then
+                    record_id=$(echo "$line" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+                    record_content=$(echo "$line" | grep -o '"content":"[^"]*' | cut -d'"' -f4)
+                    record_proxied=$(echo "$line" | grep -o '"proxied":[^,]*' | cut -d':' -f2)
+                    break
+                fi
+            done < <(echo "${records_response}" | grep -o '{[^}]*}')
+        fi
+    fi
+    
+    if [[ -n "${record_id}" ]]; then
+        _debug_log "Found record: ID=${record_id}, Content=${record_content}, Proxied=${record_proxied}"
+        echo "${record_id}:${record_content}:${record_proxied}"
+    else
+        _debug_log "No record found for name: ${record_name} and type: ${record_type}"
+        echo ""
+    fi
+}
+
+# Function to manage root record (@)
+manage_root_record() {
+    local domain="$1"
+    local zone_id="$2"
+    local cf_email="${CF_EMAIL}"
+    local cf_api_key="${CF_API_KEY}"
+    
+    clear
+    echo "====================================================="
+    echo "           MANAGE ROOT DNS RECORD (@)               "
+    echo "====================================================="
+    echo "Domain: ${domain}"
+    echo ""
+    
+    # Look for existing record
+    local existing_record
+    existing_record=$(_get_record_by_name "${cf_email}" "${cf_api_key}" "${zone_id}" "${domain}" "A")
+    
+    local record_exists=false
+    local record_id=""
+    local current_ip=""
+    local current_proxied=""
+    
+    if [[ -n "${existing_record}" ]]; then
+        record_exists=true
+        record_id=$(echo "${existing_record}" | cut -d':' -f1)
+        current_ip=$(echo "${existing_record}" | cut -d':' -f2)
+        current_proxied=$(echo "${existing_record}" | cut -d':' -f3)
+        
+        echo "Bản ghi @ hiện tại:"
+        echo "-------------------------"
+        echo "IP: ${current_ip}"
+        echo "Proxied: ${current_proxied}"
+        echo ""
+    else
+        echo "Chưa có bản ghi @ (A) cho domain này."
+        echo ""
+    fi
+    
+    # Ask for IP
+    read -rp "Nhập địa chỉ IP mới (để trống để giữ nguyên IP hiện tại): " new_ip
+    
+    if [[ -z "${new_ip}" && "${record_exists}" == true ]]; then
+        new_ip="${current_ip}"
+    fi
+    
+    if [[ -z "${new_ip}" ]]; then
+        echo "IP không được để trống. Hủy thao tác."
+        sleep 2
+        manage_dns_records "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Validate IP address format (IPv4)
+    if ! [[ "${new_ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Định dạng IP không hợp lệ."
+        sleep 2
+        manage_root_record "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Ask for proxied status
+    echo ""
+    echo "Bật Cloudflare Proxy (Đám mây cam)?"
+    echo "1. Có"
+    echo "2. Không"
+    read -rp "Lựa chọn của bạn [1/2]: " proxy_choice
+    
+    local proxied="false"
+    if [[ "${proxy_choice}" == "1" ]]; then
+        proxied="true"
+    fi
+    
+    local result=""
+    # Update or create record
+    if [[ "${record_exists}" == true ]]; then
+        # Update existing record
+        echo "Đang cập nhật bản ghi @ ..."
+        result=$(_update_dns_record "${cf_email}" "${cf_api_key}" "${zone_id}" "${record_id}" "A" "${domain}" "${new_ip}" "${proxied}")
+    else
+        # Create new record
+        echo "Đang tạo bản ghi @ mới ..."
+        result=$(_add_dns_record "${cf_email}" "${cf_api_key}" "${zone_id}" "A" "${domain}" "${new_ip}" "${proxied}")
+    fi
+    
+    if [[ "${result}" == "success" ]]; then
+        echo "Thao tác thành công!"
+    else
+        echo "Lỗi: ${result}"
+    fi
+    
+    read -rp "Nhấn Enter để tiếp tục..."
+    manage_dns_records "${domain}" "${zone_id}"
+}
+
+# Function to manage subdomain
+manage_subdomain() {
+    local domain="$1"
+    local zone_id="$2"
+    local cf_email="${CF_EMAIL}"
+    local cf_api_key="${CF_API_KEY}"
+    
+    clear
+    echo "====================================================="
+    echo "              MANAGE SUBDOMAIN RECORD               "
+    echo "====================================================="
+    echo "Domain: ${domain}"
+    echo ""
+    
+    # Ask for subdomain
+    read -rp "Nhập tên subdomain (không bao gồm domain chính, ví dụ: www): " subdomain
+    
+    if [[ -z "${subdomain}" ]]; then
+        echo "Tên subdomain không được để trống. Hủy thao tác."
+        sleep 2
+        manage_dns_records "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Format the full subdomain name
+    local full_subdomain="${subdomain}.${domain}"
+    
+    # Look for existing record
+    local existing_record
+    existing_record=$(_get_record_by_name "${cf_email}" "${cf_api_key}" "${zone_id}" "${full_subdomain}" "A")
+    
+    local record_exists=false
+    local record_id=""
+    local current_ip=""
+    local current_proxied=""
+    
+    if [[ -n "${existing_record}" ]]; then
+        record_exists=true
+        record_id=$(echo "${existing_record}" | cut -d':' -f1)
+        current_ip=$(echo "${existing_record}" | cut -d':' -f2)
+        current_proxied=$(echo "${existing_record}" | cut -d':' -f3)
+        
+        echo "Bản ghi ${subdomain} hiện tại:"
+        echo "-------------------------"
+        echo "IP: ${current_ip}"
+        echo "Proxied: ${current_proxied}"
+        echo ""
+    else
+        echo "Chưa có bản ghi A cho subdomain này."
+        echo ""
+    fi
+    
+    # Ask for IP
+    read -rp "Nhập địa chỉ IP (để trống để giữ nguyên IP hiện tại nếu có): " new_ip
+    
+    if [[ -z "${new_ip}" && "${record_exists}" == true ]]; then
+        new_ip="${current_ip}"
+    fi
+    
+    if [[ -z "${new_ip}" ]]; then
+        echo "IP không được để trống. Hủy thao tác."
+        sleep 2
+        manage_dns_records "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Validate IP address format (IPv4)
+    if ! [[ "${new_ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Định dạng IP không hợp lệ."
+        sleep 2
+        manage_subdomain "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Ask for proxied status
+    echo ""
+    echo "Bật Cloudflare Proxy (Đám mây cam)?"
+    echo "1. Có"
+    echo "2. Không"
+    read -rp "Lựa chọn của bạn [1/2]: " proxy_choice
+    
+    local proxied="false"
+    if [[ "${proxy_choice}" == "1" ]]; then
+        proxied="true"
+    fi
+    
+    local result=""
+    # Update or create record
+    if [[ "${record_exists}" == true ]]; then
+        # Update existing record
+        echo "Đang cập nhật bản ghi ${subdomain} ..."
+        result=$(_update_dns_record "${cf_email}" "${cf_api_key}" "${zone_id}" "${record_id}" "A" "${full_subdomain}" "${new_ip}" "${proxied}")
+    else
+        # Create new record
+        echo "Đang tạo bản ghi ${subdomain} mới ..."
+        result=$(_add_dns_record "${cf_email}" "${cf_api_key}" "${zone_id}" "A" "${full_subdomain}" "${new_ip}" "${proxied}")
+    fi
+    
+    if [[ "${result}" == "success" ]]; then
+        echo "Thao tác thành công!"
+    else
+        echo "Lỗi: ${result}"
+    fi
+    
+    read -rp "Nhấn Enter để tiếp tục..."
+    manage_dns_records "${domain}" "${zone_id}"
+}
+
+# Function to delete a subdomain
+delete_subdomain() {
+    local domain="$1"
+    local zone_id="$2"
+    local cf_email="${CF_EMAIL}"
+    local cf_api_key="${CF_API_KEY}"
+    
+    clear
+    echo "====================================================="
+    echo "              DELETE SUBDOMAIN RECORD               "
+    echo "====================================================="
+    echo "Domain: ${domain}"
+    echo ""
+    
+    # Get all DNS A records
+    local records_response
+    records_response=$(_get_dns_records "${cf_email}" "${cf_api_key}" "${zone_id}" "A")
+    
+    # Display list of subdomains
+    local subdomains=""
+    local count=0
+    
+    echo "Danh sách subdomains:"
+    echo "---------------------"
+    
+    if [[ "${records_response}" == *'"success":true'* ]]; then
+        if command -v jq >/dev/null 2>&1; then
+            # Use jq to find all records that are not the root domain
+            echo "${records_response}" | jq -r ".result[] | select(.name != \"${domain}\") | .name" | while read -r name; do
+                count=$((count + 1))
+                echo "${count}. ${name}"
+                subdomains="${subdomains}${name}\n"
+            done
+        else
+            # Parse without jq
+            while IFS= read -r line; do
+                local name=$(echo "$line" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+                if [[ "${name}" != "${domain}" ]]; then
+                    count=$((count + 1))
+                    echo "${count}. ${name}"
+                    subdomains="${subdomains}${name}\n"
+                fi
+            done < <(echo "${records_response}" | grep -o '{[^}]*}')
+        fi
+    fi
+    
+    if [[ "${count}" -eq 0 ]]; then
+        echo "Không có subdomain nào để xóa."
+        read -rp "Nhấn Enter để tiếp tục..."
+        manage_dns_records "${domain}" "${zone_id}"
+        return
+    fi
+    
+    echo ""
+    echo "0. Quay lại"
+    echo ""
+    
+    # Ask user to select a subdomain
+    local selection
+    read -rp "${SELECT_OPTION}" selection
+    
+    if [[ "${selection}" == "0" ]]; then
+        manage_dns_records "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Validate selection
+    if ! [[ "${selection}" =~ ^[0-9]+$ ]] || [[ "${selection}" -lt 1 ]] || [[ "${selection}" -gt "${count}" ]]; then
+        echo "${WRONG_SELECT}"
+        sleep 2
+        delete_subdomain "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Get the selected subdomain name
+    local selected_subdomain
+    selected_subdomain=$(echo -e "${subdomains}" | sed -n "${selection}p")
+    
+    # Get the record ID
+    local record_data
+    record_data=$(_get_record_by_name "${cf_email}" "${cf_api_key}" "${zone_id}" "${selected_subdomain}" "A")
+    
+    if [[ -z "${record_data}" ]]; then
+        echo "Không tìm thấy bản ghi cho subdomain này."
+        sleep 2
+        delete_subdomain "${domain}" "${zone_id}"
+        return
+    fi
+    
+    local record_id=$(echo "${record_data}" | cut -d':' -f1)
+    
+    # Confirm deletion
+    echo ""
+    echo "Bạn có chắc chắn muốn xóa subdomain ${selected_subdomain}? (y/n)"
+    read -rp "Lựa chọn của bạn: " confirm
+    
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "Hủy xóa subdomain."
+        sleep 2
+        delete_subdomain "${domain}" "${zone_id}"
+        return
+    fi
+    
+    # Delete the record
+    echo "Đang xóa subdomain ${selected_subdomain}..."
+    local result
+    result=$(_delete_dns_record "${cf_email}" "${cf_api_key}" "${zone_id}" "${record_id}")
+    
+    if [[ "${result}" == "success" ]]; then
+        echo "Xóa subdomain thành công!"
+    else
+        echo "Lỗi khi xóa subdomain: ${result}"
+    fi
+    
+    read -rp "Nhấn Enter để tiếp tục..."
+    manage_dns_records "${domain}" "${zone_id}"
+}
+
+# Function to configure Dynamic DNS
+configure_dynamic_dns() {
+    local domain="$1"
+    local zone_id="$2"
+    local cf_email="${CF_EMAIL}"
+    local cf_api_key="${CF_API_KEY}"
+    
+    clear
+    echo "====================================================="
+    echo "           CONFIGURE CLOUDFLARE DYNAMIC DNS         "
+    echo "====================================================="
+    echo "Domain: ${domain}"
+    echo ""
+    
+    echo "Chọn loại bản ghi cần thiết lập Dynamic DNS:"
+    echo "1. Domain chính (${domain})"
+    echo "2. Subdomain"
+    echo "0. Quay lại"
+    echo ""
+    
+    read -rp "${SELECT_OPTION}" option
+    
+    local record_name=""
+    case $option in
+        1)
+            record_name="${domain}"
+            ;;
+        2)
+            read -rp "Nhập tên subdomain (không bao gồm domain chính, ví dụ: www): " subdomain
+            if [[ -z "${subdomain}" ]]; then
+                echo "Tên subdomain không được để trống. Hủy thao tác."
+                sleep 2
+                configure_dynamic_dns "${domain}" "${zone_id}"
+                return
+            fi
+            record_name="${subdomain}.${domain}"
+            ;;
+        0)
+            manage_dns_records "${domain}" "${zone_id}"
+            return
+            ;;
+        *)
+            echo "${WRONG_OPTION}"
+            sleep 2
+            configure_dynamic_dns "${domain}" "${zone_id}"
+            return
+            ;;
+    esac
+    
+    # Look for existing record
+    local existing_record
+    existing_record=$(_get_record_by_name "${cf_email}" "${cf_api_key}" "${zone_id}" "${record_name}" "A")
+    
+    # Generate Dynamic DNS update script
+    local ddns_script="/usr/local/bin/cloudflare_ddns_${record_name//\./\_}.sh"
+    
+    # Create the Dynamic DNS script
+    cat > "${ddns_script}" << EOF
+#!/bin/bash
+
+# Cloudflare Dynamic DNS Update Script for ${record_name}
+# Generated on $(date)
+
+# Configuration
+CF_EMAIL="${CF_EMAIL}"
+CF_API_KEY="${CF_API_KEY}"
+CF_ZONE_ID="${zone_id}"
+CF_RECORD_NAME="${record_name}"
+
+# Get the current public IP
+IP=\$(curl -s https://api.ipify.org)
+
+# Log file
+LOG_FILE="/var/log/cloudflare_ddns_${record_name//\./\_}.log"
+
+# Log function
+log() {
+    echo "\$(date): \$1" >> "\${LOG_FILE}"
+}
+
+# Check if IP is valid
+if [[ -z "\${IP}" ]]; then
+    log "Error: Could not get public IP"
+    exit 1
+fi
+
+log "Current public IP: \${IP}"
+
+# Get existing record
+EOF
+    
+    # Add the record ID if it exists
+    if [[ -n "${existing_record}" ]]; then
+        local record_id=$(echo "${existing_record}" | cut -d':' -f1)
+        local proxied=$(echo "${existing_record}" | cut -d':' -f3)
+        
+        cat >> "${ddns_script}" << EOF
+RECORD_ID="${record_id}"
+PROXIED=${proxied}
+
+# Update existing record
+log "Updating existing DNS record with new IP: \${IP}"
+RESULT=\$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/\${CF_ZONE_ID}/dns_records/\${RECORD_ID}" \\
+    -H "X-Auth-Email: \${CF_EMAIL}" \\
+    -H "X-Auth-Key: \${CF_API_KEY}" \\
+    -H "Content-Type: application/json" \\
+    --data '{"type":"A","name":"\${CF_RECORD_NAME}","content":"\${IP}","ttl":1,"proxied":\${PROXIED}}')
+
+if [[ "\${RESULT}" == *'"success":true'* ]]; then
+    log "Successfully updated DNS record"
+else
+    log "Error updating DNS record: \${RESULT}"
+    exit 1
+fi
+EOF
+    else
+        cat >> "${ddns_script}" << EOF
+PROXIED=false
+
+# Create new record
+log "Creating new DNS record with IP: \${IP}"
+RESULT=\$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/\${CF_ZONE_ID}/dns_records" \\
+    -H "X-Auth-Email: \${CF_EMAIL}" \\
+    -H "X-Auth-Key: \${CF_API_KEY}" \\
+    -H "Content-Type: application/json" \\
+    --data '{"type":"A","name":"\${CF_RECORD_NAME}","content":"\${IP}","ttl":1,"proxied":\${PROXIED}}')
+
+if [[ "\${RESULT}" == *'"success":true'* ]]; then
+    log "Successfully created DNS record"
+else
+    log "Error creating DNS record: \${RESULT}"
+    exit 1
+fi
+EOF
+    fi
+    
+    # Make the script executable
+    chmod +x "${ddns_script}"
+    
+    # Create a cron job to run the script every 5 minutes
+    local cron_entry="*/5 * * * * ${ddns_script}"
+    (crontab -l 2>/dev/null | grep -v "${ddns_script}"; echo "${cron_entry}") | crontab -
+    
+    echo "Dynamic DNS đã được thiết lập cho ${record_name}!"
+    echo "Script được tạo tại: ${ddns_script}"
+    echo "Crontab đã được cấu hình để cập nhật IP mỗi 5 phút."
+    
+    read -rp "Nhấn Enter để tiếp tục..."
+    manage_dns_records "${domain}" "${zone_id}"
+}
+
+# Main function
+cloudflare_dns_management() {
+    _clear_debug_log
+    
+    echo "=== DEBUG: Bắt đầu quản lý DNS ==="
+    echo "Checking authentication..."
+    
+    # Make sure we're authenticated
+    if ! _cloudflare_auth; then
+        echo "Failed to authenticate with Cloudflare"
+        echo "Debug log available at: ${DEBUG_LOG}"
+        
+        echo ""
+        echo "Showing debug log content:"
+        cat "${DEBUG_LOG}"
+        
+        return 1
+    fi
+    
+    echo "CF_EMAIL: ${CF_EMAIL}"
+    echo "CF_API_KEY: ${CF_API_KEY:0:10}..."
+    echo "CF_AUTH_METHOD: ${CF_AUTH_METHOD}"
+    echo "Selecting domain..."
+    
+    # Get zones (domains) and let user select one
+    local cf_email="${CF_EMAIL}"
+    local cf_api_key="${CF_API_KEY}"
+    
+    # Get Cloudflare zones
+    local zones_response
+    zones_response=$(_get_cloudflare_zones "${cf_email}" "${cf_api_key}")
+    
+    _debug_log "Getting Cloudflare zones for email: ${cf_email}, auth_method: ${CF_AUTH_METHOD}"
+    _debug_log "=== GET_ZONES RESPONSE ==="
+    _debug_log "${zones_response}"
+    _debug_log "=== END RESPONSE ==="
+    
+    # Check for successful response
+    if [[ "${zones_response}" == *'"success":true'* ]]; then
+        # Extract domain names and IDs
+        local domains=()
+        local zone_ids=()
+        
+        if command -v jq >/dev/null 2>&1; then
+            # Use jq to extract domains and zone IDs
+            local jq_output
+            jq_output=$(echo "${zones_response}" | jq -r '.result[] | .name + ":" + .id')
+            
+            while IFS=: read -r name id; do
+                domains+=("${name}")
+                zone_ids+=("${id}")
+            done < <(echo "${jq_output}")
+        else
+            # Parse without jq
+            local zone_count
+            zone_count=$(echo "${zones_response}" | grep -o '"total_count":[0-9]*' | cut -d':' -f2)
+            
+            for i in $(seq 0 $((zone_count-1))); do
+                local name_pattern="\"result\":\\[[^]]*{[^}]*\"name\":\"([^\"]*)\""
+                local id_pattern="\"result\":\\[[^]]*{[^}]*\"id\":\"([^\"]*)\""
+                
+                if [[ "${zones_response}" =~ ${name_pattern} ]]; then
+                    domains+=("${BASH_REMATCH[1]}")
+                fi
+                
+                if [[ "${zones_response}" =~ ${id_pattern} ]]; then
+                    zone_ids+=("${BASH_REMATCH[1]}")
+                fi
+            done
+        fi
+        
+        # Show the domain list for selection
+        echo ""
+        echo "Danh sách tên miền:"
+        echo "------------------"
+        
+        local i=1
+        for domain in "${domains[@]}"; do
+            echo "${i}. ${domain}"
+            i=$((i+1))
+        done
+        
+        echo "0. Thoát"
+        echo ""
+        
+        # Ask user to select a domain
+        local selection
+        read -rp "${SELECT_OPTION}" selection
+        
+        if [[ "${selection}" == "0" ]]; then
+            return 0
+        fi
+        
+        # Validate selection
+        if ! [[ "${selection}" =~ ^[0-9]+$ ]] || [[ "${selection}" -lt 1 ]] || [[ "${selection}" -gt ${#domains[@]} ]]; then
+            echo "${WRONG_SELECT}"
+            sleep 2
+            cloudflare_dns_management
+            return 1
+        fi
+        
+        # Get the selected domain and zone ID
+        local idx=$((selection-1))
+        local selected_domain="${domains[idx]}"
+        local selected_zone_id="${zone_ids[idx]}"
+        
+        # Manage DNS records for the selected domain
+        manage_dns_records "${selected_domain}" "${selected_zone_id}"
+    else
+        echo "Domain selection exit code: 1"
+        echo "Failed to select domain"
+        echo "Debug log available at: ${DEBUG_LOG}"
+        
+        echo ""
+        echo "Showing debug log content:"
+        cat "${DEBUG_LOG}"
+        
+        return 1
+    fi
+}
+
+# Run the main function
+cloudflare_dns_management

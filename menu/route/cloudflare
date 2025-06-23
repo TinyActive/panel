@@ -669,3 +669,77 @@ cloudflare_account_management() {
         esac
     fi
 }
+
+cloudflare_security_menu() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    echo "${CLOUDFLARE_SECURITY}"
+    echo "1. ${CLOUDFLARE_BLOCK_IP}"
+    echo "2. ${CLOUDFLARE_BLOCK_COUNTRY}"
+    echo "${SELECT_OPTION}"
+    
+    local selection
+    read -r selection
+
+    case ${selection} in
+        1)
+            # Get IP to block
+            echo "${CLOUDFLARE_ENTER_IP}"
+            local ip_address
+            read -r ip_address
+
+            # Create security rule to block IP
+            local rule_name="Block IP ${ip_address}"
+            local expression="(ip.src eq ${ip_address})"
+            local result
+            result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "${CLOUDFLARE_IP_BLOCKED}"
+            fi
+            ;;
+        2)
+            # Get country code to block
+            echo "${CLOUDFLARE_ENTER_COUNTRY}"
+            local country_code
+            read -r country_code
+
+            # Create security rule to block country
+            local rule_name="Block Country ${country_code}"
+            local expression="(ip.geoip.country eq \"${country_code}\")"
+            local result
+            result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "${CLOUDFLARE_COUNTRY_BLOCKED}"
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "${WRONG_SELECT}"
+            ;;
+    esac
+}

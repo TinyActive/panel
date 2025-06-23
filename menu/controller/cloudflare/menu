@@ -1,0 +1,50 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/route/parent
+source /var/hostvn/menu/route/cloudflare
+source /var/hostvn/menu/helpers/variable_common
+# shellcheck source=/var/hostvn/menu/lang/*
+source /var/hostvn/menu/lang/"${lang}"
+
+CHOICE=1
+
+printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+printf "%s          %s Scripts - Cloudflare Manager        %s\n" "${GREEN}" "${AUTHOR}" "${NC}"
+printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+
+while [ "${CHOICE}" != "0" ]
+do
+    printf "${GREEN}%s${NC}\n" "1. ${CLOUDFLARE_ADD_DOMAIN}"
+    printf "${GREEN}%s${NC}\n" "2. ${CLOUDFLARE_DNS_MANAGEMENT}"
+    printf "${GREEN}%s${NC}\n" "3. ${CLOUDFLARE_SECURITY}"
+    printf "${GREEN}%s${NC}\n" "4. ${CLOUDFLARE_CACHE_MANAGEMENT}"
+    printf "${GREEN}%s${NC}\n" "5. ${CLOUDFLARE_BLOCK_AI}"
+    printf "${GREEN}%s${NC}\n" "6. ${CLOUDFLARE_EMAIL_ROUTING}"
+    printf "${GREEN}%s${NC}\n" "7. ${CLOUDFLARE_TURNSTILE}"
+    printf "${GREEN}%s${NC}\n" "8. ${CLOUDFLARE_ATTACK_MODE} & ${CLOUDFLARE_DEVELOPMENT_MODE}"
+    printf "${GREEN}%s${NC}\n" "=================================================="
+    read -r -p " ${SELECT_OPTION} " CHOICE
+
+    case ${CHOICE} in
+        1) clear; cloudflare_add_domain; sleep 2;;
+        2) clear; cloudflare_add_dns_record; sleep 2;;
+        3) clear; cloudflare_security_menu; sleep 2;;
+        4) clear; cloudflare_manage_cache_settings; sleep 2;;
+        5) clear; cloudflare_block_ai_bots; sleep 2;;
+        6) clear; cloudflare_enable_email_routing; sleep 2;;
+        7) clear; cloudflare_create_turnstile; sleep 2;;
+        8) clear; cloudflare_manage_security_modes; sleep 2;;
+        0) menu_primary;;
+        *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
+    esac
+done

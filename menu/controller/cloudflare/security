@@ -1,0 +1,40 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/route/parent
+source /var/hostvn/menu/route/cloudflare
+source /var/hostvn/menu/helpers/variable_common
+# shellcheck source=/var/hostvn/menu/lang/*
+source /var/hostvn/menu/lang/"${lang}"
+
+cloudflare_security_menu(){
+    CHOICE=1
+
+    printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+    printf "%s      %s Scripts - Cloudflare Security Rules      %s\n" "${GREEN}" "${AUTHOR}" "${NC}"
+    printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+
+    while [ "${CHOICE}" != "0" ]
+    do
+        printf "${GREEN}%s${NC}\n" "1. ${CLOUDFLARE_BLOCK_IP}"
+        printf "${GREEN}%s${NC}\n" "2. ${CLOUDFLARE_BLOCK_COUNTRY}"
+        printf "${GREEN}%s${NC}\n" "=================================================="
+        read -r -p " ${SELECT_OPTION} " CHOICE
+
+        case ${CHOICE} in
+            1) clear; cloudflare_block_ip; sleep 2;;
+            2) clear; cloudflare_block_country; sleep 2;;
+            0) return;;
+            *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
+        esac
+    done
+}

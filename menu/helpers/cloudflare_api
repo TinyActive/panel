@@ -1,0 +1,366 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+CF_CONFIG_FILE="/var/hostvn/.cloudflare.conf"
+
+_save_cloudflare_config() {
+    # Store Cloudflare API key and email for reuse
+    local cf_email=$1
+    local cf_api_key=$2
+
+    if [[ -f "${CF_CONFIG_FILE}" ]]; then
+        rm -f "${CF_CONFIG_FILE}"
+    fi
+
+    cat > "${CF_CONFIG_FILE}" << EOF
+CF_EMAIL="${cf_email}"
+CF_API_KEY="${cf_api_key}"
+EOF
+
+    chmod 600 "${CF_CONFIG_FILE}"
+}
+
+_load_cloudflare_config() {
+    if [[ -f "${CF_CONFIG_FILE}" ]]; then
+        source "${CF_CONFIG_FILE}"
+    fi
+
+    # Check if variables are set
+    if [[ -z "${CF_EMAIL}" || -z "${CF_API_KEY}" ]]; then
+        return 1
+    fi
+    
+    return 0
+}
+
+_validate_api_key() {
+    local cf_email=$1
+    local cf_api_key=$2
+    
+    # Make API call to verify token
+    local response
+    response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json")
+
+    # Check if the API call was successful
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+_get_cloudflare_zones() {
+    local cf_email=$1
+    local cf_api_key=$2
+    
+    # Get list of zones (domains)
+    local response
+    response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?per_page=50" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json")
+
+    echo "${response}"
+}
+
+_get_zone_id() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local domain=$3
+    
+    # Get zone ID for a domain
+    local response
+    response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json")
+
+    # Extract zone ID
+    local zone_id
+    zone_id=$(echo "${response}" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4)
+    
+    echo "${zone_id}"
+}
+
+_add_domain_to_cloudflare() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local domain=$3
+    
+    # Add domain to Cloudflare
+    local response
+    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data "{\"name\":\"${domain}\",\"jump_start\":true}")
+
+    # Check if the domain was added successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        # Extract nameservers
+        local ns1=$(echo "${response}" | grep -o '"name_servers":\[[^]]*' | grep -o '"[^"]*"' | sed 's/"//g' | head -n1)
+        local ns2=$(echo "${response}" | grep -o '"name_servers":\[[^]]*' | grep -o '"[^"]*"' | sed 's/"//g' | head -n2 | tail -n1)
+        echo "success:${ns1}:${ns2}"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_add_dns_record() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local record_type=$4  # A, CNAME, etc.
+    local record_name=$5  # subdomain or @
+    local record_content=$6  # IP address or target domain
+    local proxied=$7  # true or false
+    
+    # Add DNS record
+    local response
+    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"ttl\":1,\"proxied\":${proxied}}")
+
+    # Check if the record was added successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_create_security_rule() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local rule_name=$4
+    local expression=$5  # Filter expression
+    local action=$6  # block, js_challenge, challenge
+    
+    # Create security rule
+    local response
+    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/firewall/rules" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data "{\"filter\":{\"expression\":\"${expression}\"},\"action\":\"${action}\",\"description\":\"${rule_name}\"}")
+
+    # Check if the rule was created successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_purge_cache() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    
+    # Purge all cache
+    local response
+    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/purge_cache" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data '{"purge_everything":true}')
+
+    # Check if the cache was purged successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_update_cache_settings() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local setting_name=$4  # cache_reserve, tiered_cache, etc.
+    local value=$5  # on or off
+    
+    # Update cache settings
+    local response
+    response=$(curl -s -X PATCH "https://api.cloudflare.com/client/v4/zones/${zone_id}/settings/${setting_name}" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data "{\"value\":\"${value}\"}")
+
+    # Check if the setting was updated successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_create_bot_management_rule() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    
+    # Create rule to block AI bots
+    local response
+    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/rulesets/phases/http_request_firewall_managed/entrypoint" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data '{
+            "description": "Block AI bots",
+            "rules": [
+                {
+                    "action": "block",
+                    "expression": "cf.client.bot or cf.threat_score > 10",
+                    "description": "Block AI crawlers and high threat bots"
+                }
+            ]
+        }')
+
+    # Check if the rule was created successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_enable_email_routing() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    
+    # Enable email routing
+    local response
+    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/email/routing/enable" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json")
+
+    # Check if email routing was enabled successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        # Create catch-all rule
+        local catchall_response
+        catchall_response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/email/routing/rules" \
+            -H "X-Auth-Email: ${cf_email}" \
+            -H "X-Auth-Key: ${cf_api_key}" \
+            -H "Content-Type: application/json" \
+            --data '{
+                "name": "Catch-All Rule",
+                "enabled": true,
+                "matchers": [
+                    {
+                        "type": "all"
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "forward",
+                        "value": ["'${cf_email}'"]
+                    }
+                ]
+            }')
+        
+        if [[ "$(echo "${catchall_response}" | grep -o '"success":true')" ]]; then
+            echo "success"
+        else
+            local error=$(echo "${catchall_response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+            echo "error:${error}"
+        fi
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_create_turnstile() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local site_name=$4
+    
+    # Create Turnstile site key
+    local response
+    response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/turnstile/widgets" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data '{
+            "name": "'${site_name}'",
+            "domains": ["*.'${site_name}'", "'${site_name}'"],
+            "mode": "managed"
+        }')
+
+    # Check if Turnstile was created successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        local site_key=$(echo "${response}" | grep -o '"sitekey":"[^"]*' | cut -d'"' -f4)
+        local secret_key=$(echo "${response}" | grep -o '"secret":"[^"]*' | cut -d'"' -f4)
+        echo "success:${site_key}:${secret_key}"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}
+
+_update_security_mode() {
+    local cf_email=$1
+    local cf_api_key=$2
+    local zone_id=$3
+    local mode=$4  # under_attack or development
+    local value=$5  # on or off
+    
+    local setting_name
+    if [[ "${mode}" == "under_attack" ]]; then
+        setting_name="security_level"
+        if [[ "${value}" == "on" ]]; then
+            value="under_attack"
+        else
+            value="medium"
+        fi
+    else  # development mode
+        setting_name="development_mode"
+        if [[ "${value}" == "on" ]]; then
+            value="on"
+        else
+            value="off"
+        fi
+    fi
+    
+    # Update security mode
+    local response
+    response=$(curl -s -X PATCH "https://api.cloudflare.com/client/v4/zones/${zone_id}/settings/${setting_name}" \
+        -H "X-Auth-Email: ${cf_email}" \
+        -H "X-Auth-Key: ${cf_api_key}" \
+        -H "Content-Type: application/json" \
+        --data "{\"value\":\"${value}\"}")
+
+    # Check if the setting was updated successfully
+    if [[ "$(echo "${response}" | grep -o '"success":true')" ]]; then
+        echo "success"
+    else
+        local error=$(echo "${response}" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+        echo "error:${error}"
+    fi
+}

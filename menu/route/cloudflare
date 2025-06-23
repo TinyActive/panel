@@ -1,0 +1,547 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# shellcheck disable=SC1091
+source /var/hostvn/menu/helpers/cloudflare_api
+source /var/hostvn/menu/validate/rule
+
+_cloudflare_auth() {
+    local cf_email
+    local cf_api_key
+
+    # Try to load config first
+    if ! _load_cloudflare_config; then
+        echo "${CLOUDFLARE_API_KEY}"
+        read -r cf_api_key
+        
+        echo "${CLOUDFLARE_EMAIL}"
+        read -r cf_email
+
+        if ! _validate_api_key "${cf_email}" "${cf_api_key}"; then
+            echo "${CLOUDFLARE_API_KEY_INVALID}"
+            exit 1
+        else
+            echo "${CLOUDFLARE_API_KEY_VALID}"
+            _save_cloudflare_config "${cf_email}" "${cf_api_key}"
+        fi
+    else
+        cf_email="${CF_EMAIL}"
+        cf_api_key="${CF_API_KEY}"
+    fi
+}
+
+_select_cloudflare_domain() {
+    local cf_email="$1"
+    local cf_api_key="$2"
+    local zone_id=""
+    
+    # Get Cloudflare zones
+    local zones_response
+    zones_response=$(_get_cloudflare_zones "${cf_email}" "${cf_api_key}")
+    
+    # Check if we have domains
+    if [[ "$(echo "${zones_response}" | grep -o '"success":true')" && "$(echo "${zones_response}" | grep -o '"count":[^,]*' | grep -o '[0-9]\+')" != "0" ]]; then
+        # Extract domain names
+        local domains
+        domains=$(echo "${zones_response}" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+        
+        # Create numbered list of domains
+        echo "${CLOUDFLARE_SELECT_DOMAIN}"
+        local i=1
+        while read -r domain; do
+            echo "${i}. ${domain}"
+            i=$((i + 1))
+        done <<< "${domains}"
+        
+        # Ask user to select domain
+        local selection
+        echo "${SELECT_OPTION}"
+        read -r selection
+        
+        if [[ "${selection}" == "0" ]]; then
+            return 1
+        fi
+        
+        # Get selected domain
+        local selected_domain
+        selected_domain=$(echo "${domains}" | sed -n "${selection}p")
+        
+        # Get zone ID for selected domain
+        zone_id=$(_get_zone_id "${cf_email}" "${cf_api_key}" "${selected_domain}")
+        
+        if [[ -n "${zone_id}" ]]; then
+            echo "${selected_domain}:${zone_id}"
+            return 0
+        else
+            return 1
+        fi
+    else
+        echo "${CLOUDFLARE_NO_DOMAINS}"
+        return 1
+    fi
+}
+
+cloudflare_add_domain() {
+    _cloudflare_auth
+
+    echo "${CLOUDFLARE_ENTER_DOMAIN}"
+    local domain
+    read -r domain
+
+    # Validate domain format
+    if ! check_domain "${domain}"; then
+        echo "${WRONG_DOMAIN}"
+        return 1
+    fi
+
+    # Add domain to Cloudflare
+    local result
+    result=$(_add_domain_to_cloudflare "${CF_EMAIL}" "${CF_API_KEY}" "${domain}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        local ns1
+        local ns2
+        ns1=$(echo "${result}" | cut -d':' -f2)
+        ns2=$(echo "${result}" | cut -d':' -f3)
+        echo "${CLOUDFLARE_DOMAIN_ADDED}"
+        echo "NS1: ${ns1}"
+        echo "NS2: ${ns2}"
+    fi
+}
+
+cloudflare_add_dns_record() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Get server's public IP
+    local ip_address="${IPADDRESS}"
+    
+    # If IPADDRESS is not available, try to detect it
+    if [[ -z "${ip_address}" ]]; then
+        ip_address=$(curl -s https://ipinfo.io/ip || curl -s https://api.ipify.org)
+        
+        # If still unable to detect, ask for manual input
+        if [[ -z "${ip_address}" ]]; then
+            echo "Unable to detect server's public IP. Please enter it manually:"
+            read -r ip_address
+        fi
+    fi
+
+    # Get record details
+    echo "${CLOUDFLARE_ENTER_SUBDOMAIN}"
+    echo "(${CLOUDFLARE_SUBDOMAIN_HINT})"
+    local subdomain
+    read -r subdomain
+
+    local record_name
+    if [[ -z "${subdomain}" ]]; then
+        record_name="${domain}"
+    else
+        record_name="${subdomain}.${domain}"
+    fi
+    
+    echo ""
+    echo "${CLOUDFLARE_CONFIRM_DNS_RECORD}"
+    echo "- ${CLOUDFLARE_DOMAIN_RECORD}: ${record_name}"
+    echo "- ${CLOUDFLARE_SERVER_IP}: ${ip_address}"
+    echo ""
+    
+    # Ask for confirmation
+    echo "${CLOUDFLARE_CONFIRM_PROCEED} (y/n)"
+    local confirm
+    read -r confirm
+    
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "${CLOUDFLARE_OPERATION_CANCELLED}"
+        return 0
+    fi
+
+    # Ask about proxy
+    echo "${CLOUDFLARE_PROXY} (y/n)"
+    local proxy_choice
+    read -r proxy_choice
+    local proxied="false"
+    if [[ "${proxy_choice}" == "y" || "${proxy_choice}" == "Y" ]]; then
+        proxied="true"
+
+        # Ask about SSL
+        echo "${CLOUDFLARE_SSL} (y/n)"
+        local ssl_choice
+        read -r ssl_choice
+        if [[ "${ssl_choice}" == "y" || "${ssl_choice}" == "Y" ]]; then
+            # Enable SSL for the zone
+            _update_cache_settings "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "ssl" "flexible"
+        fi
+    fi
+
+    # Add DNS record
+    local result
+    result=$(_add_dns_record "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "A" "${record_name}" "${ip_address}" "${proxied}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_RECORD_ADDED}"
+    fi
+}
+
+cloudflare_block_ip() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Get IP to block
+    echo "${CLOUDFLARE_ENTER_IP}"
+    local ip_address
+    read -r ip_address
+
+    # Create security rule to block IP
+    local rule_name="Block IP ${ip_address}"
+    local expression="(ip.src eq ${ip_address})"
+    local result
+    result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_IP_BLOCKED}"
+    fi
+}
+
+cloudflare_block_country() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Get country code to block
+    echo "${CLOUDFLARE_ENTER_COUNTRY}"
+    local country_code
+    read -r country_code
+
+    # Create security rule to block country
+    local rule_name="Block Country ${country_code}"
+    local expression="(ip.geoip.country eq \"${country_code}\")"
+    local result
+    result=$(_create_security_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${rule_name}" "${expression}" "block")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_COUNTRY_BLOCKED}"
+    fi
+}
+
+cloudflare_manage_cache_settings() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    echo "${CLOUDFLARE_CACHE_MANAGEMENT}"
+    echo "1. ${CLOUDFLARE_CACHE_RESERVE} (on/off)"
+    echo "2. ${CLOUDFLARE_TIERED_CACHE} (on/off)"
+    echo "3. ${CLOUDFLARE_PURGE_CACHE}"
+    echo "${SELECT_OPTION}"
+    
+    local selection
+    read -r selection
+
+    case ${selection} in
+        1)
+            echo "Enable Cache Reserve? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_cache_settings "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "cache_reserve" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "Cache Reserve setting updated."
+            fi
+            ;;
+        2)
+            echo "Enable Tiered Cache? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_cache_settings "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "tiered_caching" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "Tiered Cache setting updated."
+            fi
+            ;;
+        3)
+            local result
+            result=$(_purge_cache "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                echo "${CLOUDFLARE_CACHE_PURGED}"
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "${WRONG_SELECT}"
+            ;;
+    esac
+}
+
+cloudflare_block_ai_bots() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Create rule to block AI bots
+    local result
+    result=$(_create_bot_management_rule "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_AI_BLOCKED}"
+    fi
+}
+
+cloudflare_enable_email_routing() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Enable email routing
+    local result
+    result=$(_enable_email_routing "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        echo "${CLOUDFLARE_EMAIL_ENABLED}"
+    fi
+}
+
+cloudflare_create_turnstile() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    # Create Turnstile
+    local result
+    result=$(_create_turnstile "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "${domain}")
+
+    if [[ "${result}" == error:* ]]; then
+        local error
+        error=$(echo "${result}" | cut -d':' -f2-)
+        echo "${error}"
+    else
+        local site_key
+        local secret_key
+        site_key=$(echo "${result}" | cut -d':' -f2)
+        secret_key=$(echo "${result}" | cut -d':' -f3)
+        echo "${CLOUDFLARE_TURNSTILE_CREATED}"
+        echo "Site Key: ${site_key}"
+        echo "Secret Key: ${secret_key}"
+        echo "Please save these keys for future use."
+    fi
+}
+
+cloudflare_manage_security_modes() {
+    _cloudflare_auth
+
+    # Select domain
+    local result
+    result=$(_select_cloudflare_domain "${CF_EMAIL}" "${CF_API_KEY}")
+
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local domain
+    local zone_id
+    domain=$(echo "${result}" | cut -d':' -f1)
+    zone_id=$(echo "${result}" | cut -d':' -f2)
+
+    echo "1. ${CLOUDFLARE_ATTACK_MODE} (on/off)"
+    echo "2. ${CLOUDFLARE_DEVELOPMENT_MODE} (on/off)"
+    echo "${SELECT_OPTION}"
+    
+    local selection
+    read -r selection
+
+    case ${selection} in
+        1)
+            echo "Enable Under Attack Mode? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_security_mode "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "under_attack" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                if [[ "${value}" == "on" ]]; then
+                    echo "${CLOUDFLARE_MODE_ENABLED}"
+                else
+                    echo "${CLOUDFLARE_MODE_DISABLED}"
+                fi
+            fi
+            ;;
+        2)
+            echo "Enable Development Mode? (y/n)"
+            local choice
+            read -r choice
+            local value="off"
+            if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+                value="on"
+            fi
+            
+            local result
+            result=$(_update_security_mode "${CF_EMAIL}" "${CF_API_KEY}" "${zone_id}" "development" "${value}")
+            
+            if [[ "${result}" == error:* ]]; then
+                local error
+                error=$(echo "${result}" | cut -d':' -f2-)
+                echo "${error}"
+            else
+                if [[ "${value}" == "on" ]]; then
+                    echo "${CLOUDFLARE_MODE_ENABLED}"
+                else
+                    echo "${CLOUDFLARE_MODE_DISABLED}"
+                fi
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "${WRONG_SELECT}"
+            ;;
+    esac
+}

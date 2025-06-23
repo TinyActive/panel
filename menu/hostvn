@@ -43,8 +43,9 @@ do
     printf "${GREEN}%s${NC}\n" "11. ${lang_account_manager}"
     printf "${GREEN}%s${NC}\n" "12. Cronjob/Auto Backup"
     printf "${GREEN}%s${NC}\n" "13. ${lang_manager_tool}"
-    printf "${GREEN}%s${NC}\n" "14. ${lang_manager_update_scripts}"
-    printf "${GREEN}%s${NC}\n" "15. Change language"
+    printf "${GREEN}%s${NC}\n" "14. ${CLOUDFLARE_MANAGER}"
+    printf "${GREEN}%s${NC}\n" "15. ${lang_manager_update_scripts}"
+    printf "${GREEN}%s${NC}\n" "16. Change language"
     printf "${GREEN}%s${NC}\n" "=================================================="
     read -r -p " Nhap vao lua chon cua ban [0 = Thoat] " CHOICE
     if [ -z "${CHOICE}" ]
@@ -66,8 +67,9 @@ do
         11) clear; menu_account ;;
         12) clear; menu_cronjob ;;
         13) clear; menu_tools ;;
-        14) clear ; update_script;;
-        15) clear ; change_language;;
+        14) clear; menu_cloudflare ;;
+        15) clear ; update_script;;
+        16) clear ; change_language;;
         0) clear; printf "%s\n" "${GREEN}Bye Bye... Cam on ban da su dung ${AUTHOR} Script${NC}";;
         *) clear; printf "%s\n" "${GREEN}Lua chon cua ban khong chinh xac. Vui long chon lai.${NC}";;
     esac

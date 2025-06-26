@@ -12,10 +12,10 @@
 
 # set evironment variables in /etc/environment
 if [[ -f /etc/environment ]]; then
-    echo "HOME_PAGE=https://tinyactive.github.io/panel" > /etc/environment
+    echo "HOME_PAGE=https://sdk.tinycp.me" > /etc/environment
     export $(grep -v '^#' /etc/environment | xargs)
  else
-    echo "HOME_PAGE=https://tinyactive.github.io/panel" > /etc/environment
+    echo "HOME_PAGE=https://sdk.tinycp.me" > /etc/environment
     export $(grep -v '^#' /etc/environment | xargs)
 fi
 

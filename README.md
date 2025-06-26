@@ -246,7 +246,7 @@
 ## 🚀 Cài đặt nhanh
 
 ```bash
-curl -sO https://tinyactive.github.io/panel/install && chmod +x install && ./install
+curl -sO https://sdk.tinycp.me/install && chmod +x install && ./install
 ```
 
 ## 📘 Tài liệu & Hướng dẫn sử dụng

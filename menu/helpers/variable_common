@@ -25,6 +25,12 @@ HOMEPAGE_LINK="https://github.com/TinyActive/panel"
 UPDATE_LINK="${HOMEPAGE_LINK}/update"
 CURRENT_DATE=$(date +%Y-%m-%d)
 
+# VIP Menu Variables
+VIP_EXT_LINK="https://cms.manhtuong.net"
+VIP_FILE_NAME="menu-ubuntu-vip.tar.gz"
+VIP_FILE_NAME_FREE="menu-ubuntu.tar.gz"
+VIP_FILE_VERSION="6"
+
 # Set directory variables
 BASH_DIR="/var/tinycp"
 USER_DIR="/var/tinycp/users"

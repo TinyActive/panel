@@ -1,0 +1,458 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Source required files with error handling
+if [ -f "/var/tinycp/menu/validate/rule" ]; then
+    source /var/tinycp/menu/validate/rule
+fi
+
+if [ -f "/var/tinycp/menu/helpers/function" ]; then
+    source /var/tinycp/menu/helpers/function
+fi
+
+if [ -f "/var/tinycp/menu/helpers/variable_common" ]; then
+    source /var/tinycp/menu/helpers/variable_common
+fi
+
+# Additional function if not available in helpers
+_cd_dir(){
+    if [ -d "$1" ]; then
+        cd "$1" || exit
+    else
+        echo "Directory $1 does not exist!"
+        return 1
+    fi
+}
+
+# Check if a string is a valid JWT
+is_valid_jwt() {
+    local jwt="$1"
+    # JWT must have 3 parts separated by 2 dots
+    if [[ "$jwt" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Download VIP menu file using JWT
+get_vip_menu() {
+    local jwt_key="$1"
+    local vip_url="${VIP_EXT_LINK}/api/download.php?file=${VIP_FILE_VERSION}&api_key=${jwt_key}"
+    local vip_file="menu-ubuntu-vip.tar.gz"
+    
+    echo "Dang tai menu VIP..."
+    _cd_dir "${BASH_DIR}"
+    
+    if [ -f "$vip_file" ]; then
+        echo "Da ton tai file $vip_file, xoa truoc khi tai lai."
+        rm -f "$vip_file"
+    fi
+    
+    echo "URL tai: $vip_url"
+    echo "Dang tai file..."
+    
+    if curl -4 -f -L -o "$vip_file" "$vip_url" --connect-timeout 30 --max-time 300; then
+        echo "Tai menu VIP thanh cong!"
+        
+        # Check file size
+        file_size=$(stat -f%z "$vip_file" 2>/dev/null || stat -c%s "$vip_file" 2>/dev/null)
+        echo "Kich thuoc file tai ve: $file_size bytes"
+        
+        # Check if file is too small (likely an error page)
+        if [ "$file_size" -lt 1000 ]; then
+            echo "Canh bao: File tai ve qua nho, co the la trang loi."
+            echo "Noi dung file:"
+            cat "$vip_file"
+            return 1
+        fi
+        
+        # Check file type
+        file_type=$(file "$vip_file" 2>/dev/null)
+        echo "Loai file: $file_type"
+        
+        # Check if it's a valid archive file (gzip or tar)
+        if echo "$file_type" | grep -q -E "(gzip|tar archive)"; then
+            echo "File hop le: Phat hien duoc file nen tar"
+        else
+            echo "Canh bao: File khong phai la archive hop le. Noi dung dau file:"
+            head -c 200 "$vip_file"
+            echo ""
+            return 1
+        fi
+        
+        return 0
+    else
+        echo "Tai menu VIP that bai. Vui long kiem tra lai JWT key hoac ket noi mang."
+        echo "Ma loi curl: $?"
+        
+        # If file exists but download failed, show its content (might be error message)
+        if [ -f "$vip_file" ]; then
+            echo "Noi dung phan hoi tu server:"
+            head -c 500 "$vip_file"
+            echo ""
+            rm -f "$vip_file"
+        fi
+        return 1
+    fi
+}
+
+# Install VIP menu
+install_vip_menu() {
+    local vip_file="menu-ubuntu-vip.tar.gz"
+    
+    echo "Dang cai dat menu VIP..."
+    _cd_dir "${BASH_DIR}"
+    
+    # Check if VIP file exists and is valid
+    if [ ! -f "$vip_file" ]; then
+        echo "Loi: Khong tim thay file $vip_file"
+        return 1
+    fi
+    
+    # Check file size (should be > 0)
+    file_size=$(stat -f%z "$vip_file" 2>/dev/null || stat -c%s "$vip_file" 2>/dev/null)
+    if [ "$file_size" -eq 0 ]; then
+        echo "Loi: File $vip_file rong hoac bi loi"
+        return 1
+    fi
+    
+    echo "Kich thuoc file: $file_size bytes"
+    
+    # Test if file is a valid tar or tar.gz
+    echo "Kiem tra tinh hop le cua file..."
+    file_type=$(file "$vip_file" 2>/dev/null)
+    
+    # Determine extraction method based on file type
+    if echo "$file_type" | grep -q "gzip"; then
+        echo "Phat hien file gzip, su dung tar -xzf"
+        tar_command="tar -xzf"
+        list_command="tar -tzf"
+    elif echo "$file_type" | grep -q "tar archive"; then
+        echo "Phat hien file tar thuong, su dung tar -xf"
+        tar_command="tar -xf"
+        list_command="tar -tf"
+    else
+        echo "Loi: File $vip_file khong phai la file tar hop le"
+        echo "Loai file phat hien: $file_type"
+        echo "Dang kiem tra noi dung file..."
+        head -c 100 "$vip_file" | hexdump -C
+        return 1
+    fi
+    
+    # Test extraction without actually extracting
+    if ! $list_command "$vip_file" >/dev/null 2>&1; then
+        echo "Loi: Khong the doc noi dung file archive"
+        return 1
+    fi
+    
+    # List contents of tar file for debugging
+    echo "Noi dung file tar:"
+    $list_command "$vip_file" | head -10
+    
+    # Backup current menu
+    if [ -d "menu" ]; then
+        echo "Sao luu menu hien tai..."
+        cp -r menu menu_backup_$(date +%Y%m%d_%H%M%S)
+    fi
+    
+    # Extract VIP menu with verbose output for debugging
+    echo "Dang giai nen file bang lenh: $tar_command"
+    if $tar_command "$vip_file" -v; then
+        echo "Giai nen menu VIP thanh cong!"
+        
+        # Verify extraction
+        if [ ! -d "menu" ]; then
+            echo "Loi: Thu muc menu khong duoc tao sau khi giai nen"
+            return 1
+        fi
+        
+        # Set permissions
+        chmod 711 menu
+        find menu -type f -exec chmod +x {} \; 2>/dev/null
+        
+        # Convert line endings
+        if command -v dos2unix > /dev/null 2>&1; then
+            find menu -type f -name "*.sh" -o -name "*" | xargs dos2unix 2>/dev/null
+        fi
+        
+        # Update tiny command
+        if [ -f "${BASH_DIR}/menu/tiny" ]; then
+            cp "${BASH_DIR}/menu/tiny" /usr/bin/tiny && chmod +x /usr/bin/tiny
+            echo "Da cap nhat lenh tiny"
+        fi
+        
+        # Update configuration to mark as VIP
+        if grep -q "menu_version=" "${FILE_INFO}"; then
+            sed -i "s/menu_version=.*/menu_version=VIP/" "${FILE_INFO}"
+        else
+            echo "menu_version=VIP" >> "${FILE_INFO}"
+        fi
+        
+        echo "Da cap nhat cau hinh thanh VIP"
+        
+        # Clean up
+        rm -f "$vip_file"
+        
+        echo "Cai dat menu VIP hoan tat!"
+        return 0
+    else
+        echo "Loi khi giai nen menu VIP!"
+        echo "Dang kiem tra chi tiet loi..."
+        $tar_command "$vip_file" 2>&1 | head -5
+        return 1
+    fi
+}
+
+# Check current menu version
+check_current_version() {
+    if grep -q "menu_version=VIP" "${FILE_INFO}" 2>/dev/null; then
+        return 0  # Already VIP
+    else
+        return 1  # FREE version
+    fi
+}
+
+# Main upgrade function
+_upgrade_vip() {
+    clear
+    echo "==============================="
+    echo "     NANG CAP MENU VIP"
+    echo "==============================="
+    echo
+    
+    # Check if already VIP
+    if check_current_version; then
+        printf "%s\n" "${GREEN}Ban dang su dung phien ban VIP.${NC}"
+        echo
+        read -r -p "Nhan Enter de quay lai menu chinh..."
+        return 0
+    fi
+    
+    echo "Ban dang su dung phien ban FREE."
+    echo "De nang cap len VIP, ban can ma JWT hop le."
+    echo
+    
+    while true; do
+        read -r -p "Nhap ma JWT cua ban: " jwt_key
+        echo
+        
+        if [ -z "$jwt_key" ]; then
+            echo "Ban chua nhap ma JWT!"
+            echo
+            read -r -p "Ban co muon tiep tuc? (y/n): " continue_choice
+            if [[ ! "$continue_choice" =~ ^[yY]$ ]]; then
+                echo "Da huy nang cap VIP."
+                return 1
+            fi
+            continue
+        fi
+        
+        if ! is_valid_jwt "$jwt_key"; then
+            printf "%s\n" "${RED}Ma JWT khong hop le! JWT phai co dinh dang: xxx.yyy.zzz${NC}"
+            echo
+            read -r -p "Ban co muon thu lai? (y/n): " retry_choice
+            if [[ ! "$retry_choice" =~ ^[yY]$ ]]; then
+                echo "Da huy nang cap VIP."
+                return 1
+            fi
+            continue
+        fi
+        
+        break
+    done
+    
+    echo "Dang xac thuc va tai menu VIP..."
+    echo
+    
+    if get_vip_menu "$jwt_key"; then
+        echo
+        echo "Tai menu VIP thanh cong!"
+        echo
+        read -r -p "Ban co muon cai dat menu VIP ngay bay gio? (y/n): " install_choice
+        
+        if [[ "$install_choice" =~ ^[yY]$ ]]; then
+            echo
+            if install_vip_menu; then
+                printf "%s\n" "${GREEN}Nang cap menu VIP thanh cong!${NC}"
+                printf "%s\n" "${GREEN}Menu se tu dong tai lai sau 3 giay...${NC}"
+                sleep 3
+                exec tiny
+            else
+                printf "%s\n" "${RED}Loi khi cai dat menu VIP!${NC}"
+                return 1
+            fi
+        else
+            echo "Menu VIP da duoc tai xuong nhung chua duoc cai dat."
+            echo "Ban co the cai dat sau bang cach chay lai chuc nang nay."
+        fi
+    else
+        printf "%s\n" "${RED}Khong the tai menu VIP. Vui long kiem tra lai JWT key hoac ket noi mang.${NC}"
+        return 1
+    fi
+}
+
+# Restore to FREE version
+_restore_free() {
+    clear
+    echo "==============================="
+    echo "     KHOI PHUC MENU FREE"
+    echo "==============================="
+    echo
+    
+    if ! check_current_version; then
+        printf "%s\n" "${GREEN}Ban dang su dung phien ban FREE.${NC}"
+        echo
+        read -r -p "Nhan Enter de quay lai menu chinh..."
+        return 0
+    fi
+    
+    echo "Ban dang su dung phien ban VIP."
+    echo
+    read -r -p "Ban co chac chan muon khoi phuc ve phien ban FREE? (y/n): " confirm_choice
+    
+    if [[ ! "$confirm_choice" =~ ^[yY]$ ]]; then
+        echo "Da huy khoi phuc menu FREE."
+        return 1
+    fi
+    
+    echo
+    echo "Dang tai menu FREE..."
+    
+    _cd_dir "${BASH_DIR}"
+    
+    # Backup current VIP menu
+    if [ -d "menu" ]; then
+        echo "Sao luu menu VIP hien tai..."
+        cp -r menu menu_vip_backup_$(date +%Y%m%d_%H%M%S)
+    fi
+    
+    # Download FREE menu
+    if wget -q "${EXT_LINK}/ubuntu/menu.tar.gz" -O menu.tar.gz; then
+        echo "Tai menu FREE thanh cong!"
+        
+        # Remove old menu and extract new one
+        rm -rf menu
+        if tar -xzf menu.tar.gz > /dev/null 2>&1; then
+            rm -rf menu.tar.gz
+            
+            # Set permissions
+            chmod 711 menu
+            chmod +x ./menu/* ./menu/*/* ./menu/*/*/* ./menu/*/*/*/* > /dev/null 2>&1
+            
+            # Convert line endings
+            if command -v dos2unix > /dev/null 2>&1; then
+                dos2unix ./menu/* > /dev/null 2>&1
+                dos2unix ./menu/*/* > /dev/null 2>&1
+                dos2unix ./menu/*/*/* > /dev/null 2>&1
+            fi
+            
+            # Update tiny command
+            if [ -f "${BASH_DIR}/menu/tiny" ]; then
+                cp "${BASH_DIR}/menu/tiny" /usr/bin/tiny && chmod +x /usr/bin/tiny
+            fi
+            
+            # Update configuration to mark as FREE
+            if grep -q "menu_version=" "${FILE_INFO}"; then
+                sed -i "s/menu_version=.*/menu_version=FREE/" "${FILE_INFO}"
+            else
+                echo "menu_version=FREE" >> "${FILE_INFO}"
+            fi
+            
+            printf "%s\n" "${GREEN}Khoi phuc menu FREE thanh cong!${NC}"
+            printf "%s\n" "${GREEN}Menu se tu dong tai lai sau 3 giay...${NC}"
+            sleep 3
+            exec tiny
+        else
+            printf "%s\n" "${RED}Loi khi giai nen menu FREE!${NC}"
+            return 1
+        fi
+    else
+        printf "%s\n" "${RED}Khong the tai menu FREE!${NC}"
+        return 1
+    fi
+}
+
+# Show upgrade menu
+_show_upgrade_menu() {
+    clear
+    echo "==============================="
+    echo "     QUAN LY PHIEN BAN MENU"
+    echo "==============================="
+    echo
+    
+    # Show current version
+    if check_current_version; then
+        printf "Phien ban hien tai: %s\n" "${GREEN}VIP${NC}"
+    else
+        printf "Phien ban hien tai: %s\n" "${YELLOW}FREE${NC}"
+    fi
+    echo
+    
+    echo "1) Nang cap len VIP"
+    echo "2) Khoi phuc ve FREE"
+    echo "3) Kiem tra trang thai"
+    echo "0) Quay lai menu chinh"
+    echo
+    
+    read -r -p "Nhap lua chon cua ban [0-3]: " choice
+    
+    case $choice in
+        1)
+            _upgrade_vip
+            ;;
+        2)
+            _restore_free
+            ;;
+        3)
+            clear
+            echo "==============================="
+            echo "     TRANG THAI MENU"
+            echo "==============================="
+            echo
+            if check_current_version; then
+                printf "Phien ban: %s\n" "${GREEN}VIP${NC}"
+                echo "Tinh nang: Day du cac tinh nang cao cap"
+            else
+                printf "Phien ban: %s\n" "${YELLOW}FREE${NC}"
+                echo "Tinh nang: Cac tinh nang co ban"
+            fi
+            echo
+            read -r -p "Nhan Enter de quay lai..."
+            _show_upgrade_menu
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            printf "%s\n" "${RED}Lua chon khong hop le!${NC}"
+            sleep 2
+            _show_upgrade_menu
+            ;;
+    esac
+}
+
+# Main function
+_run() {
+    # Set required variables if not set
+    if [ -z "$VIP_EXT_LINK" ]; then
+        VIP_EXT_LINK="https://cms.manhtuong.net"
+    fi
+    if [ -z "$VIP_FILE_VERSION" ]; then
+        VIP_FILE_VERSION="6"
+    fi
+    
+    _show_upgrade_menu
+}
+
+# Run the upgrade menu
+_run

@@ -62,7 +62,41 @@ _update(){
     exit
 }
 
-_run(){
+_show_update_menu(){
+    clear
+    printf "\n"
+    printf "${GREEN}┌──────────────────────────────────────────────────────────────┐${NC}\n"
+    printf "${GREEN}│%-62s│${NC}\n" "                    CAP NHAT & NANG CAP"
+    printf "${GREEN}└──────────────────────────────────────────────────────────────┘${NC}\n"
+    printf "\n"
+    printf "${GREEN}┌──────────────────────────────────────────────────────────────┐${NC}\n"
+    printf "${GREEN}│${NC}  [1] ⟹  %-51s${GREEN}│${NC}\n" "Cap nhat Script (FREE)"
+    printf "${GREEN}│${NC}  [2] ⟹  %-51s${GREEN}│${NC}\n" "Quan ly phien ban Menu (FREE/VIP)"
+    printf "${GREEN}│${NC}  [0] ⟹  %-51s${GREEN}│${NC}\n" "Quay lai menu chinh"
+    printf "${GREEN}└──────────────────────────────────────────────────────────────┘${NC}\n"
+    printf "\n"
+    
+    read -r -p " ${GREEN}Nhap lua chon cua ban [0-2]:${NC} " choice
+    
+    case $choice in
+        1)
+            _run_update
+            ;;
+        2)
+            . /var/tinycp/menu/controller/vps/upgrade_vip
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            printf "%s\n" "${RED}Lua chon khong hop le!${NC}"
+            sleep 2
+            _show_update_menu
+            ;;
+    esac
+}
+
+_run_update(){
     _set_var
     _check_update
 
@@ -79,6 +113,10 @@ _run(){
         clear
         printf "%s\n" "${ALERT}"
     fi
+}
+
+_run(){
+    _show_update_menu
 }
 
 ALERT=""

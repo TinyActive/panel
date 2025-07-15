@@ -11,7 +11,7 @@
 ######################################################################
 
 OS_VER=$(grep -oP '(?<=^VERSION_ID=).+' /etc/os-release | tr -d '"')
-LIST_OS_VER_SUPPORT=('24.04')
+LIST_OS_VER_SUPPORT=('22.04' '24.04')
 rm -rf ubuntu
 
 DIR=$(pwd)
@@ -82,7 +82,8 @@ create_source_list(){
         mv /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources."$(date +%Y-%m-%d)"
     fi
     # Set codename based on OS version
-    case "${OS_VERSION}" in
+    case "${OS_VER}" in
+        "22.04") codename="jammy" ;;
         "24.04") codename="noble" ;;  # Fixed: 24.04 uses "noble", not "lunar"
         *) return 1 ;;
     esac
@@ -193,8 +194,7 @@ if [[ " ${LIST_OS_VER_SUPPORT[*]} " == *" ${OS_VER} "* ]]; then
 else
     clear
     printf "${RED}%s${NC}" "Ban dang su dung phien ban ${OS} ${OS_VER}."
-    printf "${RED}%s${NC}" "Hien tai Scripts chi ho tro Ubuntu 24.04, phien ban 24.04 la on dinh nhat, neu co the hay dung Ubuntu 24.04"
+    printf "${RED}%s${NC}" "Hien tai Scripts chi ho tro Ubuntu 22.04 va 24.04, phien ban 24.04 la on dinh nhat, neu co the hay dung Ubuntu 24.04"
     printf "${RED}%s${NC}" "Huy cai dat."
     exit
 fi
-

@@ -448,7 +448,7 @@ _run() {
         VIP_EXT_LINK="https://cms.manhtuong.net"
     fi
     if [ -z "$VIP_FILE_VERSION" ]; then
-        VIP_FILE_VERSION="6"
+        VIP_FILE_VERSION="7"
     fi
     
     _show_upgrade_menu

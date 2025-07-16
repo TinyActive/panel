@@ -39,7 +39,7 @@ UPDATE_LINK="${HOME_PAGE}/update"
 FILE_INFO="${BASH_DIR}/.tinycp.conf"
 HOSTNAME=$(hostname)
 PHP2_RELEASE="no"
-
+PAGE_FACE="https://www.facebook.com/groups/tinycp.me"
 # Copyright
 AUTHOR="tinycp.me"
 AUTHOR_CONTACT="contact@manhtuong.net"
@@ -61,7 +61,7 @@ WRONG_PHP_SELECT_2="Ban nhap sai. Vui long nhap lai."
 INVALID_PHP2_OPTION="${RED}Lua chon cua ban khong chinh xac. Vui long chon lai.${NC}"
 SELECT_PHP_2="Lua chon phien ban PHP thu hai ban muon su dung:"
 LOGIN_NOTI1="Cam on ban da su dung dich vu cua ${AUTHOR}."
-LOGIN_NOTI2="Neu can ho tro vui long truy cap ${AUTHOR_CONTACT}"
+LOGIN_NOTI2="Neu can ho tro vui long truy cap ${PAGE_FACE}"
 LOGIN_NOTI3="Truoc khi dat cau hoi vui long xem wiki: https://github.com/TinyActive/panel/wiki"
 LOGIN_NOTI4="De mo menu ban go lenh sau:  tiny"
 

@@ -10,7 +10,7 @@
 **Cài đặt LEMP stack nhanh, an toàn và tối ưu cho VPS của bạn**
 
 [📚 Tài liệu](https://tiny-panel.gitbook.io/) | 
-[👥 Nhóm hỗ trợ](https://www.facebook.com/groups/hostvn.vn) | 
+[👥 Nhóm hỗ trợ](https://www.facebook.com/groups/tinycp.me) | 
 [🌐 Trang chủ](https://hostvn.vn/)
 
 </div>
@@ -252,7 +252,7 @@ curl -sO https://sdk.tinycp.me/install && chmod +x install && ./install
 ## 📘 Tài liệu & Hướng dẫn sử dụng
 
 Xem chi tiết tài liệu và hướng dẫn tại:
-[https://help.hostvn.vn/](https://help.hostvn.vn/)
+[https://tinycp.me/](https://tinycp.me/)
 
 ## 🗺️ Lộ trình phát triển
 
@@ -304,14 +304,14 @@ Xem chi tiết tài liệu và hướng dẫn tại:
       <h4>Kênh chính thức</h4>
       <ul>
         <li>🌐 <b>Website</b>: 
-          <a href="https://hostvn.vn">hostvn.vn</a>, 
-          <a href="https://hostvn.net">hostvn.net</a>
+          <a href="https://tinycp.me">tinycp.me</a>, 
+          <a href="https://tinyactive.com">tinyactive.com</a>
         </li>
         <li>👥 <b>Nhóm Facebook</b>: 
-          <a href="https://www.facebook.com/groups/hostvn.vn">Cộng đồng HOSTVN</a>
+          <a href="https://www.facebook.com/groups/tinycp.me">Cộng đồng TinyPanel</a>
         </li>
         <li>📧 <b>Email</b>: 
-          <a href="mailto:sanvv@hostvn.com">sanvv@hostvn.com</a>
+          <a href="mailto:contact@manhtuong.net">contact@manhtuong.net</a>
         </li>
       </ul>
     </td>
@@ -336,7 +336,6 @@ Xem chi tiết tài liệu và hướng dẫn tại:
     <td width="50%">
       <h4>Nhà phát triển chính</h4>
       <ul>
-        <li>👨‍💻 <b>Sanvv</b> - Lập trình viên chính</li>
         <li>👨‍💻 <b>Mạnh Tường</b> - Lập trình viên</li>
       </ul>
     </td>

@@ -9,9 +9,9 @@
 
 **Cài đặt LEMP stack nhanh, an toàn và tối ưu cho VPS của bạn**
 
-[📚 Tài liệu](https://tiny-panel.gitbook.io/) | 
+[📚 Tài liệu](https://doc.tinycp.me) | 
 [👥 Nhóm hỗ trợ](https://www.facebook.com/groups/tinycp.me) | 
-[🌐 Trang chủ](https://hostvn.vn/)
+[🌐 Trang chủ](https://tinycp.me/)
 
 </div>
 
@@ -252,7 +252,7 @@ curl -sO https://sdk.tinycp.me/install && chmod +x install && ./install
 ## 📘 Tài liệu & Hướng dẫn sử dụng
 
 Xem chi tiết tài liệu và hướng dẫn tại:
-[https://tinycp.me/](https://tinycp.me/)
+[https://doc.tinycp.me/](https://doc.tinycp.me)
 
 ## 🗺️ Lộ trình phát triển
 

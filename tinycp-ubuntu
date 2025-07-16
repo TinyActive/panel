@@ -39,7 +39,7 @@ UPDATE_LINK="${HOME_PAGE}/update"
 FILE_INFO="${BASH_DIR}/.tinycp.conf"
 HOSTNAME=$(hostname)
 PHP2_RELEASE="no"
-PAGE_FACE="https://www.facebook.com/groups/tinycp.me"
+PAGE_FACE="https://doc.tinycp.me"
 # Copyright
 AUTHOR="tinycp.me"
 AUTHOR_CONTACT="contact@manhtuong.net"

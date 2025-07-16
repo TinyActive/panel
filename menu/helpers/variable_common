@@ -29,7 +29,7 @@ CURRENT_DATE=$(date +%Y-%m-%d)
 VIP_EXT_LINK="https://cms.manhtuong.net"
 VIP_FILE_NAME="menu-ubuntu-vip.tar.gz"
 VIP_FILE_NAME_FREE="menu-ubuntu.tar.gz"
-VIP_FILE_VERSION="7"
+VIP_FILE_VERSION="8"
 
 # Set directory variables
 BASH_DIR="/var/tinycp"

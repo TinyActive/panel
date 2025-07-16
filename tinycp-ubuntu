@@ -26,7 +26,7 @@ NC='\033[0m'
 VIP_EXT_LINK="https://cms.manhtuong.net"
 VIP_FILE_NAME="menu-ubuntu-vip.tar.gz"
 VIP_FILE_NAME_FREE="menu-ubuntu.tar.gz"
-VIP_FILE_VERSION="7"
+VIP_FILE_VERSION="8"
 
 
 SCRIPTS_VERSION="0.1.0"

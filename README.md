@@ -17,7 +17,7 @@
 
 ---
 
-> TinyPanel giúp cài đặt và cấu hình Nginx, MariaDB, PHP với các thiết lập tối ưu về hiệu năng và bảo mật. Viết bằng Bash shell script cho Ubuntu (18.04 tới 24.04)
+> TinyPanel giúp cài đặt và cấu hình Nginx, MariaDB, PHP với các thiết lập tối ưu về hiệu năng và bảo mật. Viết bằng Bash shell script cho Ubuntu 24.04
 <div align="center">
 ⚠️ LƯU Ý: Nghiêm cấm phân phối lại hoặc đóng gói lại dự án này cho mục đích thương mại.
 </div>
@@ -343,7 +343,7 @@ Xem chi tiết tài liệu và hướng dẫn tại:
       <h4>Dựa trên</h4>
       <ul>
         <li>🏆 Script gốc HOSTVN.VN</li>
-        <li>🏆 Đóng góp từ cộng đồng mã nguồn mở</li>
+        <li>🏆 Đóng góp từ cộng đồng mã nguồn mở phát triển bởi TinyActive</li>
       </ul>
     </td>
   </tr>

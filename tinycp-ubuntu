@@ -427,6 +427,7 @@ install_nginx(){
         "--add-module=../ngx_cache_purge-${ngx_cache_purge_version}" \
         "--add-module=../headers-more-nginx-module-${more_clear_headers_v}" \
         "--add-module=../nginx-module-vts-${nginx_module_vts_v}" \
+        "--with-compat" \
         "--with-cc-opt='-D FD_SETSIZE=32768'" 
 
     if [ $? -ne 0 ]; then

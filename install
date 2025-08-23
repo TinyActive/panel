@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Enable error handling
+set -e
+trap 'echo "Error occurred at line $LINENO. Exit code: $?" >&2' ERR
+
 ######################################################################
 #           Auto Install & Optimize LEMP Stack on Ubuntu             #
 #                                                                    #
@@ -9,6 +13,12 @@
 #              Please do not remove copyright. Thank!                #
 #  Please do not copy under any circumstance for commercial reason!  #
 ######################################################################
+
+# INSTALLATION WITH TMUX SESSION PROTECTION
+# This script automatically uses tmux to protect your installation session
+# If your connection is lost, you can reconnect and run:
+# tmux attach-session -t panel_install
+# to resume the installation process
 
 # set evironment variables in /etc/environment
 if [[ -f /etc/environment ]]; then
@@ -106,6 +116,17 @@ else
     printf "${RED}%s${NC}\n" "${WRONG_OS}"
 fi
 
+# Install and setup tmux for session protection
+echo "Installing tmux for session protection..."
+if [[ "${OS}" == "debian" || "${OS}" == "ubuntu" ]]; then
+    apt update -qq && apt install -y tmux
+elif [[ "${OS}" == "centos" || "${OS}" == "almalinux" ]]; then
+    yum -y install tmux
+fi
+
+# Get the full path of the current script
+SCRIPT_PATH="$(realpath "$0")"
+
 #wellcome message  
 welcome() {
     clear
@@ -114,10 +135,75 @@ welcome() {
     echo "#       Auto Install & Optimize LEMP       #"
     echo "#                                           #"
     echo "#           Author: TinyPanel - HOSTVN Base #"
-    echo "#             Website: tinyactive.net       #"
+    echo "#             Website: tinycp.me           #"
     echo "#                                           #"
     echo "#############################################"
 }
+
+# Check if we're already in a tmux session
+if [[ -z "$TMUX" ]]; then
+    echo "Starting tmux session for installation protection..."
+    echo "You will be automatically attached to the session to monitor progress."
+    echo "If connection is lost, reconnect and run: tmux attach-session -t panel_install"
+    echo "Script path: $SCRIPT_PATH"
+    echo "OS detected: $OS"
+    sleep 2
+    
+    # Temporarily disable strict error handling for tmux operations
+    set +e
+    
+    # Kill existing session if any
+    echo "Checking for existing tmux sessions..."
+    tmux list-sessions 2>/dev/null && echo "Found existing sessions" || echo "No existing sessions"
+    tmux kill-session -t panel_install 2>/dev/null && echo "Killed existing panel_install session" || echo "No panel_install session to kill"
+    
+    # Create tmux session and automatically attach user to it
+    echo "Creating tmux session with command: TMUX_INSTALL=1 bash '$SCRIPT_PATH'"
+    if tmux new-session -s panel_install "TMUX_INSTALL=1 bash '$SCRIPT_PATH'"; then
+        echo "Tmux session completed"
+    else
+        echo "Tmux session failed, exit code: $?"
+    fi
+    
+    # Re-enable error handling
+    set -e
+    exit 0
+fi
+
+# If we're here, we're in tmux or TMUX_INSTALL is set
+if [[ "$TMUX_INSTALL" == "1" ]]; then
+    echo "=========================================="
+    echo "Installation running in protected tmux session"
+    echo "Session name: panel_install"
+    echo "TMUX variable: $TMUX"
+    echo "TMUX_INSTALL variable: $TMUX_INSTALL"
+    echo "OS detected: $OS"
+    echo "If disconnected, reconnect with: tmux attach-session -t panel_install"
+    echo "=========================================="
+    echo ""
+elif [[ -n "$TMUX" ]]; then
+    echo "Running inside existing tmux session"
+    echo "TMUX variable: $TMUX"
+    echo "OS detected: $OS"
+fi
+
+# Call welcome function to show the banner
+welcome
+
+# Small pause to let user see the welcome message
+echo "Starting installation process..."
+echo "Checking OS compatibility..."
+echo "OS detected: $OS"
+echo "OS_LIST: ${OS_LIST[*]}"
+sleep 3
+
+# Debug OS check
+if [[ " ${OS_LIST[*]} " == *" ${OS} "* ]]; then
+    echo "OS '$OS' is supported. Proceeding with installation..."
+else
+    echo "OS '$OS' is NOT supported."
+    echo "Supported OS list: ${OS_LIST[*]}"
+fi
 
 
 
@@ -132,6 +218,14 @@ if [[ " ${OS_LIST[*]} " == *" ${OS} "* ]]; then
     dos2unix "${OS}"
     chmod +x "${OS}"
     bash "${OS}"
+    
+    # Clean up tmux session after installation
+    if [[ -n "$TMUX" ]]; then
+        echo ""
+        echo "Installation completed successfully!"
+        echo "To exit tmux session, press Ctrl+B then D, or type 'exit'"
+        echo "To completely remove the tmux session: tmux kill-session -t panel_install"
+    fi
 else
     printf "${RED}%s${NC}\n" "${WRONG_OS}"
     printf "${RED}%s${NC}\n" "${CANCEL_INSTALL}"

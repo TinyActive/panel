@@ -45,10 +45,6 @@ if [[ -z "${HOME_PAGE}" ]]; then
     exit 1
 fi
 
-
-# Remove old install folder
-rm -rf install
-
 # Set Color
 RED='\033[0;31m'
 NC='\033[0m'
